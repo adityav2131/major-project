@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, doc, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import Header from '@/app/components/Header';
 import ProtectedRoute from '@/app/components/ProtectedRoute';
@@ -42,48 +42,46 @@ const ProjectsPage = () => {
   });
 
   useEffect(() => {
+    let unsubscribe = null;
+
     const fetchData = async () => {
       if (!userProfile) return;
-
       try {
         setLoading(true);
-
         if (userProfile.role === 'student') {
-          // Fetch student's project if they have one
           if (userProfile.teamId) {
             const projectsQuery = query(
               collection(db, 'projects'),
               where('teamId', '==', userProfile.teamId)
             );
-            const projectsSnapshot = await getDocs(projectsQuery);
-            if (!projectsSnapshot.empty) {
-              const projectData = {
-                id: projectsSnapshot.docs[0].id,
-                ...projectsSnapshot.docs[0].data()
-              };
-              setMyProject(projectData);
-            }
+            // Real-time listener for student's project
+            unsubscribe = onSnapshot(projectsQuery, (snapshot) => {
+              if (!snapshot.empty) {
+                const projectData = {
+                  id: snapshot.docs[0].id,
+                  ...snapshot.docs[0].data()
+                };
+                setMyProject(projectData);
+              }
+            });
           }
         } else {
-          // Faculty/Admin - fetch all projects or assigned projects
-          let projectsQuery;
-          if (userProfile.role === 'faculty') {
-            projectsQuery = query(
-              collection(db, 'projects'),
-              where('mentorId', '==', user.uid)
-            );
-          } else {
-            projectsQuery = query(collection(db, 'projects'));
-          }
-          
-          const projectsSnapshot = await getDocs(projectsQuery);
-          const projectsData = projectsSnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-          }));
-          setProjects(projectsData);
+          let projectsQueryRef;
+            if (userProfile.role === 'faculty') {
+              projectsQueryRef = query(
+                collection(db, 'projects'),
+                where('mentorId', '==', user.uid)
+              );
+            } else {
+              projectsQueryRef = query(collection(db, 'projects'));
+            }
+            const projectsSnapshot = await getDocs(projectsQueryRef);
+            const projectsData = projectsSnapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            }));
+            setProjects(projectsData);
         }
-
       } catch (error) {
         console.error('Error fetching projects:', error);
       } finally {
@@ -92,6 +90,7 @@ const ProjectsPage = () => {
     };
 
     fetchData();
+    return () => { if (unsubscribe) unsubscribe(); };
   }, [userProfile, user]);
 
   const handleInputChange = (e) => {
@@ -290,12 +289,26 @@ const ProjectsPage = () => {
                       <div className="bg-blue-50 rounded-lg p-4">
                         <h3 className="font-medium text-gray-900 mb-2">Mentor Feedback</h3>
                         {myProject.mentorId ? (
-                          <div className="space-y-2">
-                            <p className="text-sm text-gray-600">Latest feedback will appear here</p>
-                            <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">
-                              View all feedback
-                            </button>
-                          </div>
+                          myProject.lastFeedback ? (
+                            <div className="space-y-2">
+                              <p className="text-sm text-gray-700 whitespace-pre-line">{myProject.lastFeedback}</p>
+                              {myProject.lastRating && (
+                                <div className="flex items-center space-x-1">
+                                  {[1,2,3,4,5].map(star => (
+                                    <svg key={star} className={`w-4 h-4 ${star <= myProject.lastRating ? 'text-yellow-400 fill-current' : 'text-gray-300'}`} viewBox="0 0 20 20" fill="currentColor">
+                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                    </svg>
+                                  ))}
+                                </div>
+                              )}
+                              <p className="text-xs text-gray-500">Updated {myProject.lastFeedbackAt ? new Date(myProject.lastFeedbackAt).toLocaleString() : ''}</p>
+                              <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">
+                                View all feedback
+                              </button>
+                            </div>
+                          ) : (
+                            <p className="text-sm text-gray-600">Waiting for mentor feedback</p>
+                          )
                         ) : (
                           <p className="text-sm text-gray-600">Waiting for mentor assignment</p>
                         )}
