@@ -1,15 +1,18 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --background: #fafafa;
+  --foreground: #212121;
+  --primary: #d32f2f;        /* University red */
+  --primary-dark: #b71c1c;   /* Darker red */
+  --secondary: #ff6f00;      /* Orange from flame */
+  --secondary-light: #ffb74d; /* Light orange */
+  --accent: #37474f;         /* Dark gray for gear */
+  --surface: #ffffff;        /* Card background */
+  --border: #e0e0e0;         /* Border color */
+  --success: #4caf50;        /* Success green */
+  --warning: #ff9800;        /* Warning orange */
+  --error: #f44336;          /* Error red */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -22,5 +25,126 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.6;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--border);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--primary);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary-dark);
+}
+
+/* Custom component styles */
+.btn-primary {
+  background-color: #dc2626;
+  color: white;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  transition: background-color 0.2s;
+}
+
+.btn-primary:hover {
+  background-color: #b91c1c;
+}
+
+.btn-secondary {
+  background-color: #ea580c;
+  color: white;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  transition: background-color 0.2s;
+}
+
+.btn-secondary:hover {
+  background-color: #c2410c;
+}
+
+.btn-outline {
+  border: 1px solid #dc2626;
+  color: #dc2626;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  transition: all 0.2s;
+  background: transparent;
+}
+
+.btn-outline:hover {
+  background-color: #dc2626;
+  color: white;
+}
+
+.card {
+  background: white;
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  border: 1px solid #e5e7eb;
+  padding: 1.5rem;
+}
+
+.input-field {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.input-field:focus {
+  border-color: #dc2626;
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.2);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.625rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.badge-success {
+  background-color: #dcfce7;
+  color: #166534;
+}
+
+.badge-warning {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.badge-error {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
+.badge-info {
+  background-color: #dbeafe;
+  color: #1e40af;
+}
+
+.gradient-bg {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+}
+
+.glass-effect {
+  backdrop-filter: blur(10px);
+  background: rgba(255, 255, 255, 0.8);
 }
