@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, doc, arrayUnion, arrayRemove, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { safeFirestoreOperation } from '@/lib/firebaseConnection';
 import Header from '@/app/components/Header';
 import ProtectedRoute from '@/app/components/ProtectedRoute';
 import {
@@ -25,37 +26,47 @@ const TeamsPage = () => {
   const [teams, setTeams] = useState([]);
   const [myTeam, setMyTeam] = useState(null);
   const [availableStudents, setAvailableStudents] = useState([]);
+  const [availableTeams, setAvailableTeams] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreateTeam, setShowCreateTeam] = useState(false);
   const [showJoinTeam, setShowJoinTeam] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [teamName, setTeamName] = useState('');
   const [teamDescription, setTeamDescription] = useState('');
+  const [notification, setNotification] = useState({ show: false, message: '', type: '' });
+  const [editingTeam, setEditingTeam] = useState(null);
+  const [newMaxMembers, setNewMaxMembers] = useState(4);
+
+  // Show notification helper
+  const showNotification = (message, type = 'success') => {
+    setNotification({ show: true, message, type });
+    setTimeout(() => {
+      setNotification({ show: false, message: '', type: '' });
+    }, 4000);
+  };
 
   useEffect(() => {
-    const fetchData = async () => {
-      if (!userProfile) return;
+    if (!userProfile) return;
 
+    let teamsUnsubscribe = null;
+    let studentsUnsubscribe = null;
+    let availableTeamsUnsubscribe = null;
+
+    const fetchFallbackData = async () => {
       try {
-        setLoading(true);
-
-        // Fetch all teams for admin/faculty or user's team for students
         if (userProfile.role === 'admin' || userProfile.role === 'faculty') {
-          const teamsQuery = query(collection(db, 'teams'));
-          const teamsSnapshot = await getDocs(teamsQuery);
+          const teamsSnapshot = await getDocs(query(collection(db, 'teams')));
           const teamsData = teamsSnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
           }));
           setTeams(teamsData);
         } else {
-          // Student - fetch their team if they have one
           if (userProfile.teamId) {
-            const teamsQuery = query(
+            const teamsSnapshot = await getDocs(query(
               collection(db, 'teams'),
-              where('id', '==', userProfile.teamId)
-            );
-            const teamsSnapshot = await getDocs(teamsQuery);
+              where('__name__', '==', userProfile.teamId)
+            ));
             if (!teamsSnapshot.empty) {
               const teamData = {
                 id: teamsSnapshot.docs[0].id,
@@ -65,90 +76,125 @@ const TeamsPage = () => {
             }
           }
 
-          // Fetch available students for team formation
-          const studentsQuery = query(
+          const studentsSnapshot = await getDocs(query(
             collection(db, 'users'),
             where('role', '==', 'student'),
             where('teamId', '==', null)
-          );
-          const studentsSnapshot = await getDocs(studentsQuery);
+          ));
           const studentsData = studentsSnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
           }));
           setAvailableStudents(studentsData);
+
+          // Fetch available teams
+          const allTeamsSnapshot = await getDocs(query(collection(db, 'teams')));
+          const allTeamsData = allTeamsSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }));
+          const openTeams = allTeamsData.filter(team =>
+            team.members && team.members.length < team.maxMembers
+          );
+          setAvailableTeams(openTeams);
+        }
+      } catch (error) {
+        console.error('Error in fallback data fetch:', error);
+      }
+    };
+
+    const setupRealtimeListeners = async () => {
+      try {
+        setLoading(true);
+
+        // Set up real-time listener for teams
+        if (userProfile.role === 'admin' || userProfile.role === 'faculty') {
+          const teamsQuery = query(collection(db, 'teams'));
+          teamsUnsubscribe = onSnapshot(teamsQuery, (snapshot) => {
+            const teamsData = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            }));
+            setTeams(teamsData);
+          }, (error) => {
+            console.error('Error listening to teams:', error);
+            fetchFallbackData();
+          });
+        } else {
+          // Student - listen to their team if they have one
+          if (userProfile.teamId) {
+            const teamQuery = query(
+              collection(db, 'teams'),
+              where('__name__', '==', userProfile.teamId)
+            );
+            teamsUnsubscribe = onSnapshot(teamQuery, (snapshot) => {
+              if (!snapshot.empty) {
+                const teamData = {
+                  id: snapshot.docs[0].id,
+                  ...snapshot.docs[0].data()
+                };
+                setMyTeam(teamData);
+              } else {
+                setMyTeam(null); // Team might have been deleted
+              }
+            });
+          } else {
+              setMyTeam(null); // Ensure myTeam is null if user has no teamId
+          }
+
+          // Set up real-time listener for available students
+          const studentsQuery = query(
+            collection(db, 'users'),
+            where('role', '==', 'student'),
+            where('teamId', '==', null)
+          );
+          studentsUnsubscribe = onSnapshot(studentsQuery, (snapshot) => {
+            const studentsData = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            }));
+            setAvailableStudents(studentsData);
+          });
+
+          // Set up real-time listener for available teams (teams with space)
+          const availableTeamsQuery = query(collection(db, 'teams'));
+          availableTeamsUnsubscribe = onSnapshot(availableTeamsQuery, (snapshot) => {
+            const teamsData = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            }));
+            const openTeams = teamsData.filter(team =>
+              team.members && team.members.length < team.maxMembers
+            );
+            setAvailableTeams(openTeams);
+          });
         }
 
       } catch (error) {
-        console.error('Error fetching teams data:', error);
+        console.error('Error setting up real-time listeners:', error);
+        fetchFallbackData();
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
+    setupRealtimeListeners();
+
+    // Cleanup listeners on unmount
+    return () => {
+      if (teamsUnsubscribe) teamsUnsubscribe();
+      if (studentsUnsubscribe) studentsUnsubscribe();
+      if (availableTeamsUnsubscribe) availableTeamsUnsubscribe();
+    };
   }, [userProfile]);
-
-  const fetchTeamsData = async () => {
-    if (!userProfile) return;
-
-    try {
-      setLoading(true);
-
-      // Fetch all teams for admin/faculty or user's team for students
-      if (userProfile.role === 'admin' || userProfile.role === 'faculty') {
-        const teamsQuery = query(collection(db, 'teams'));
-        const teamsSnapshot = await getDocs(teamsQuery);
-        const teamsData = teamsSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setTeams(teamsData);
-      } else {
-        // Student - fetch their team if they have one
-        if (userProfile.teamId) {
-          const teamsQuery = query(
-            collection(db, 'teams'),
-            where('id', '==', userProfile.teamId)
-          );
-          const teamsSnapshot = await getDocs(teamsQuery);
-          if (!teamsSnapshot.empty) {
-            const teamData = {
-              id: teamsSnapshot.docs[0].id,
-              ...teamsSnapshot.docs[0].data()
-            };
-            setMyTeam(teamData);
-          }
-        }
-
-        // Fetch available students for team formation
-        const studentsQuery = query(
-          collection(db, 'users'),
-          where('role', '==', 'student'),
-          where('teamId', '==', null)
-        );
-        const studentsSnapshot = await getDocs(studentsQuery);
-        const studentsData = studentsSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setAvailableStudents(studentsData);
-      }
-
-    } catch (error) {
-      console.error('Error fetching teams data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const createTeam = async () => {
     if (!teamName.trim() || !userProfile) return;
 
-    try {
+    const result = await safeFirestoreOperation(async () => {
       const newTeam = {
-        name: teamName,
-        description: teamDescription,
+        name: teamName.trim(),
+        description: teamDescription.trim(),
         leaderId: user.uid,
         members: [user.uid],
         createdAt: new Date().toISOString(),
@@ -158,78 +204,107 @@ const TeamsPage = () => {
       };
 
       const teamRef = await addDoc(collection(db, 'teams'), newTeam);
-      
-      // Update user's teamId
+
       await updateDoc(doc(db, 'users', user.uid), {
         teamId: teamRef.id
       });
 
-      // Reset form and close modal
+      return { success: true, teamName: newTeam.name };
+    });
+
+    if (result?.success) {
+      showNotification(`Team "${result.teamName}" created successfully!`, 'success');
       setTeamName('');
       setTeamDescription('');
       setShowCreateTeam(false);
-      
-      // Refresh data
-      fetchTeamsData();
-    } catch (error) {
-      console.error('Error creating team:', error);
+    } else {
+      showNotification('Failed to create team. Please try again.', 'error');
     }
   };
 
   const joinTeam = async (teamId) => {
     if (!userProfile || userProfile.teamId) return;
 
-    try {
-      // Update team members
+    const result = await safeFirestoreOperation(async () => {
       await updateDoc(doc(db, 'teams', teamId), {
         members: arrayUnion(user.uid)
       });
 
-      // Update user's teamId
       await updateDoc(doc(db, 'users', user.uid), {
         teamId: teamId
       });
 
-      // Refresh data
-      fetchTeamsData();
-    } catch (error) {
-      console.error('Error joining team:', error);
+      return { success: true };
+    });
+
+    if (result?.success) {
+      showNotification('Successfully joined the team!', 'success');
+      setShowJoinTeam(false);
+      setSearchQuery('');
+    } else {
+      showNotification('Failed to join team. Please try again.', 'error');
+    }
+  };
+  
+  // The extra brace was here. It has been removed.
+
+  const updateTeamMaxMembers = async (teamId, maxMembers) => {
+    if (!userProfile || userProfile.role !== 'admin') return;
+
+    const result = await safeFirestoreOperation(async () => {
+      await updateDoc(doc(db, 'teams', teamId), {
+        maxMembers: parseInt(maxMembers, 10)
+      });
+      return { success: true };
+    });
+
+    if (result?.success) {
+      showNotification('Team maximum members updated successfully!', 'success');
+      setEditingTeam(null);
+    } else {
+      showNotification('Failed to update team settings.', 'error');
     }
   };
 
   const leaveTeam = async () => {
     if (!myTeam || !userProfile) return;
 
-    try {
-      // Remove from team members
-      await updateDoc(doc(db, 'teams', myTeam.id), {
-        members: arrayRemove(user.uid)
-      });
+    const result = await safeFirestoreOperation(async () => {
+      const teamDocRef = doc(db, 'teams', myTeam.id);
+      
+      // If user is the leader and there are other members, transfer leadership
+      if (myTeam.leaderId === user.uid && myTeam.members.length > 1) {
+        const newLeaderId = myTeam.members.find(memberId => memberId !== user.uid);
+        if (newLeaderId) {
+            await updateDoc(teamDocRef, {
+                leaderId: newLeaderId,
+                members: arrayRemove(user.uid)
+            });
+        }
+      } else {
+        await updateDoc(teamDocRef, {
+            members: arrayRemove(user.uid)
+        });
+      }
 
-      // Update user's teamId
       await updateDoc(doc(db, 'users', user.uid), {
         teamId: null
       });
 
-      // If user was the leader and there are other members, transfer leadership
-      if (myTeam.leaderId === user.uid && myTeam.members.length > 1) {
-        const newLeader = myTeam.members.find(memberId => memberId !== user.uid);
-        await updateDoc(doc(db, 'teams', myTeam.id), {
-          leaderId: newLeader
-        });
-      }
+      return { success: true };
+    });
 
-      // Refresh data
+    if (result?.success) {
+      showNotification('Successfully left the team!', 'success');
       setMyTeam(null);
-      fetchTeamsData();
-    } catch (error) {
-      console.error('Error leaving team:', error);
+    } else {
+      showNotification('Failed to leave team. Please try again.', 'error');
     }
   };
 
-  const filteredStudents = availableStudents.filter(student =>
-    student.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    student.studentId.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredTeams = availableTeams.filter(team =>
+    team.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (team.description && team.description.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
   if (loading) {
@@ -247,19 +322,37 @@ const TeamsPage = () => {
     <ProtectedRoute>
       <div className="min-h-screen bg-gray-50">
         <Header />
-        
+
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {/* Notification */}
+          {notification.show && (
+            <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg max-w-sm ${
+              notification.type === 'success'
+                ? 'bg-green-100 border border-green-300 text-green-800'
+                : 'bg-red-100 border border-red-300 text-red-800'
+            }`}>
+              <div className="flex items-center space-x-2">
+                {notification.type === 'success' ? (
+                  <Check className="w-5 h-5" />
+                ) : (
+                  <AlertCircle className="w-5 h-5" />
+                )}
+                <span className="font-medium">{notification.message}</span>
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-between items-center mb-8">
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Team Management</h1>
               <p className="text-gray-600 mt-1">
-                {userProfile?.role === 'student' 
+                {userProfile?.role === 'student'
                   ? 'Create or join a team for your final year project'
                   : 'Manage and monitor student teams'
                 }
               </p>
             </div>
-            
+
             {userProfile?.role === 'student' && !myTeam && (
               <div className="flex space-x-3">
                 <button
@@ -350,7 +443,7 @@ const TeamsPage = () => {
                           </button>
                         )}
                         
-                        <button 
+                        <button
                           onClick={leaveTeam}
                           className="w-full text-left p-3 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
                         >
@@ -405,10 +498,50 @@ const TeamsPage = () => {
                   
                   <p className="text-gray-600 text-sm mb-4">{team.description}</p>
                   
-                  <div className="flex items-center justify-between text-sm text-gray-500">
+                  <div className="flex items-center justify-between text-sm text-gray-500 mb-3">
                     <span>{team.members?.length || 0}/{team.maxMembers} members</span>
                     <span>Created {new Date(team.createdAt).toLocaleDateString()}</span>
                   </div>
+                  
+                  {userProfile?.role === 'admin' && (
+                    <div className="mb-3">
+                      {editingTeam === team.id ? (
+                        <div className="flex items-center space-x-2">
+                          <label className="text-xs text-gray-600">Max Members:</label>
+                          <input
+                            type="number"
+                            min="2"
+                            max="10"
+                            value={newMaxMembers}
+                            onChange={(e) => setNewMaxMembers(e.target.value)}
+                            className="w-16 px-2 py-1 text-xs border border-gray-300 rounded"
+                          />
+                          <button
+                            onClick={() => updateTeamMaxMembers(team.id, newMaxMembers)}
+                            className="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700"
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={() => setEditingTeam(null)}
+                            className="text-xs bg-gray-400 text-white px-2 py-1 rounded hover:bg-gray-500"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setEditingTeam(team.id);
+                            setNewMaxMembers(team.maxMembers);
+                          }}
+                          className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                        >
+                          Edit Max Members
+                        </button>
+                      )}
+                    </div>
+                  )}
                   
                   <div className="mt-4 pt-4 border-t border-gray-200">
                     <button className="text-sm text-red-600 hover:text-red-700 font-medium">
@@ -496,44 +629,72 @@ const TeamsPage = () => {
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="input-field pl-10"
-                    placeholder="Search students by name or ID"
+                    placeholder="Search teams by name or description"
                   />
                 </div>
               </div>
               
               <div className="space-y-3">
-                {filteredStudents.map((student) => (
-                  <div key={student.id} className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
-                        <Users size={16} className="text-red-600" />
+                {filteredTeams.map((team) => (
+                  <div key={team.id} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:border-red-300 transition-colors">
+                    <div className="flex items-center space-x-4">
+                      <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+                        <Users size={20} className="text-red-600" />
                       </div>
-                      <div>
-                        <p className="text-sm font-medium text-gray-900">{student.name}</p>
-                        <p className="text-xs text-gray-500">ID: {student.studentId}</p>
-                        <p className="text-xs text-gray-500">Year {student.year}, Semester {student.semester}</p>
+                      <div className="flex-1">
+                        <h3 className="text-sm font-medium text-gray-900">{team.name}</h3>
+                        <p className="text-xs text-gray-500 mt-1">{team.description}</p>
+                        <div className="flex items-center space-x-4 mt-2">
+                          <span className="text-xs text-gray-500">
+                            {team.members?.length || 0}/{team.maxMembers} members
+                          </span>
+                          <span className={`text-xs px-2 py-1 rounded-full ${
+                            team.status === 'forming'
+                              ? 'bg-yellow-100 text-yellow-800'
+                              : 'bg-green-100 text-green-800'
+                          }`}>
+                            {team.status}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            Created {new Date(team.createdAt).toLocaleDateString()}
+                          </span>
+                        </div>
                       </div>
                     </div>
                     <button
-                      onClick={() => {/* Implement invite functionality */}}
-                      className="btn-outline text-sm"
+                      onClick={() => joinTeam(team.id)}
+                      disabled={team.members?.length >= team.maxMembers}
+                      className="btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      Invite
+                      {team.members?.length >= team.maxMembers ? 'Full' : 'Join Team'}
                     </button>
                   </div>
                 ))}
                 
-                {filteredStudents.length === 0 && (
+                {filteredTeams.length === 0 && (
                   <div className="text-center py-8">
                     <Users className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                    <p className="text-gray-500">No available students found</p>
+                    <p className="text-gray-500">
+                      {availableTeams.length === 0
+                        ? 'No teams available to join'
+                        : 'No teams match your search'
+                      }
+                    </p>
+                    {availableTeams.length === 0 && (
+                      <p className="text-gray-400 text-sm mt-2">
+                        You can create a new team instead.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
               
               <div className="flex justify-end mt-6">
                 <button
-                  onClick={() => setShowJoinTeam(false)}
+                  onClick={() => {
+                    setShowJoinTeam(false);
+                    setSearchQuery('');
+                  }}
                   className="btn-outline"
                 >
                   Close
