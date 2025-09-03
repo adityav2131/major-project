@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
+import { collection, query, where, getDocs, onSnapshot, orderBy, limit } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import Header from '@/app/components/Header';
 import ProtectedRoute from '@/app/components/ProtectedRoute';
@@ -32,116 +32,173 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchData = async () => {
-      if (!userProfile) return;
+    if (!userProfile) return;
 
+    setLoading(true);
+    let unsubscribers = [];
+
+    const load = async () => {
       try {
-        setLoading(true);
-
-        // Fetch stats based on user role
+        // --- Stats by role ---
         if (userProfile.role === 'student') {
-          await fetchStudentStats();
+          if (userProfile.teamId) {
+            const projectsQ = query(collection(db, 'projects'), where('teamId', '==', userProfile.teamId));
+            const unsub = onSnapshot(projectsQ, (snap) => {
+              const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+              const pending = docs.filter(p => p.status === 'pending_approval').length;
+              const completedPhases = docs.reduce((acc, p) => acc + ((p.currentPhase || 1) - 1), 0);
+              setStats({
+                totalProjects: docs.length,
+                activeTeams: userProfile.teamId ? 1 : 0,
+                pendingApprovals: pending,
+                completedPhases
+              });
+            });
+            unsubscribers.push(unsub);
+          } else {
+            setStats({ totalProjects: 0, activeTeams: 0, pendingApprovals: 0, completedPhases: 0 });
+          }
         } else if (userProfile.role === 'faculty') {
-          await fetchFacultyStats();
+          const mentoredQ = query(collection(db, 'projects'), where('mentorId', '==', userProfile.id));
+          const pendingQ = query(collection(db, 'projects'), where('status', '==', 'pending_approval'), where('mentorId', '==', null));
+          const unsub1 = onSnapshot(mentoredQ, (snap) => {
+            const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            const teams = new Set(docs.map(p => p.teamId).filter(Boolean));
+            const completedPhases = docs.reduce((acc, p) => acc + ((p.currentPhase || 1) - 1), 0);
+            setStats(prev => ({
+              ...prev,
+              totalProjects: docs.length,
+              activeTeams: teams.size,
+              completedPhases
+            }));
+          });
+          const unsub2 = onSnapshot(pendingQ, (snap) => {
+            setStats(prev => ({ ...prev, pendingApprovals: snap.size }));
+          });
+          unsubscribers.push(unsub1, unsub2);
         } else if (userProfile.role === 'admin') {
-          await fetchAdminStats();
+          const projectsQ = query(collection(db, 'projects'));
+          const teamsQ = query(collection(db, 'teams'));
+          const unsub1 = onSnapshot(projectsQ, (snap) => {
+            const docs = snap.docs.map(d => d.data());
+            const pending = docs.filter(p => p.status === 'pending_approval').length;
+            const completedPhases = docs.reduce((acc, p) => acc + ((p.currentPhase || 1) - 1), 0);
+            setStats(prev => ({
+              ...prev,
+              totalProjects: docs.length,
+              pendingApprovals: pending,
+              completedPhases
+            }));
+          });
+          const unsub2 = onSnapshot(teamsQ, (snap) => {
+            const activeTeams = snap.docs.filter(d => (d.data().members || []).length > 0).length;
+            setStats(prev => ({ ...prev, activeTeams }));
+          });
+          unsubscribers.push(unsub1, unsub2);
         }
 
-        // Fetch recent activities
-        await fetchRecentActivities();
-        
-        // Fetch upcoming deadlines
-        await fetchUpcomingDeadlines();
+        // --- Recent activities (notifications + recent projects + evaluations) ---
+        // Team notifications (limit 5)
+        let activities = [];
+        const baseNotifsQ = userProfile.role === 'student' && userProfile.teamId
+          ? query(collection(db, 'teamNotifications'), where('teamId', '==', userProfile.teamId), orderBy('createdAt', 'desc'), limit(5))
+          : query(collection(db, 'teamNotifications'), orderBy('createdAt', 'desc'), limit(5));
+        const unsubNotifs = onSnapshot(baseNotifsQ, (snap) => {
+            activities = [
+              ...snap.docs.map(d => ({
+                id: `notif_${d.id}`,
+                type: d.data().type || 'notification',
+                message: d.data().title || d.data().message || 'Notification',
+                timestamp: (d.data().createdAt?.toDate?.() || new Date()).toISOString(),
+                icon: MessageSquare
+              }))
+            ];
+            setRecentActivities(prev => mergeAndSortActivities(activities, prev));
+        });
+        unsubscribers.push(unsubNotifs);
 
-      } catch (error) {
-        console.error('Error fetching dashboard data:', error);
+        // Recent projects (limit 5)
+        const projectsRecentQ = userProfile.role === 'student' && userProfile.teamId
+          ? query(collection(db, 'projects'), where('teamId', '==', userProfile.teamId), orderBy('submittedAt', 'desc'), limit(3))
+          : query(collection(db, 'projects'), orderBy('submittedAt', 'desc'), limit(3));
+        const unsubProjectsRecent = onSnapshot(projectsRecentQ, (snap) => {
+          const projActs = snap.docs.map(d => ({
+            id: `proj_${d.id}`,
+            type: 'project_submitted',
+            message: `Project: ${d.data().title}`,
+            timestamp: d.data().submittedAt || new Date().toISOString(),
+            icon: BookOpen
+          }));
+          setRecentActivities(prev => mergeAndSortActivities([...activities, ...projActs], prev));
+        });
+        unsubscribers.push(unsubProjectsRecent);
+
+        // Evaluations (faculty/admin or student team)
+        let evalQuery;
+        if (userProfile.role === 'student' && userProfile.teamId) {
+          // Need to first fetch project IDs for team
+          const teamProjectsSnap = await getDocs(query(collection(db, 'projects'), where('teamId', '==', userProfile.teamId)));
+          const ids = teamProjectsSnap.docs.map(d => d.id);
+          if (ids.length) {
+            // Firestore doesn't allow 'in' with more than 10; assume small.
+            evalQuery = query(collection(db, 'evaluations'));
+            // We'll filter client-side for simplicity
+          }
+        } else {
+          evalQuery = query(collection(db, 'evaluations'));
+        }
+        if (evalQuery) {
+          const unsubEval = onSnapshot(evalQuery, (snap) => {
+            let evalActs = snap.docs.map(d => ({
+              id: `eval_${d.id}`,
+              type: 'feedback_received',
+              message: 'Mentor feedback submitted',
+              timestamp: d.data().submittedAt || new Date().toISOString(),
+              icon: MessageSquare,
+              projectId: d.data().projectId
+            }));
+            if (userProfile.role === 'student' && userProfile.teamId) {
+              const projectIds = new Set(evalActs.map(a => a.projectId));
+              evalActs = evalActs.filter(a => projectIds.has(a.projectId));
+            }
+            const merged = [...activities, ...evalActs];
+            setRecentActivities(prev => mergeAndSortActivities(merged, prev));
+          });
+          unsubscribers.push(unsubEval);
+        }
+
+        // --- Upcoming deadlines from phases ---
+        const phasesQ = query(collection(db, 'phases'));
+        const unsubPhases = onSnapshot(phasesQ, (snap) => {
+          const now = Date.now();
+            const upcoming = snap.docs
+              .map(d => ({ id: d.id, ...d.data() }))
+              .filter(p => p.deadline && new Date(p.deadline).getTime() > now)
+              .sort((a,b) => new Date(a.deadline) - new Date(b.deadline))
+              .slice(0, 5);
+            setUpcomingDeadlines(upcoming.map(p => ({
+              id: p.id,
+              title: p.name,
+              dueDate: p.deadline,
+              status: 'pending'
+            })));
+        });
+        unsubscribers.push(unsubPhases);
+      } catch (e) {
+        console.error('Dashboard realtime error:', e);
       } finally {
         setLoading(false);
       }
     };
-
-    fetchData();
+    load();
+    return () => { unsubscribers.forEach(u => u && u()); };
   }, [userProfile]);
 
-  const fetchStudentStats = async () => {
-    // Mock data for now - replace with actual Firestore queries
-    setStats({
-      totalProjects: 1,
-      activeTeams: 1,
-      pendingApprovals: 2,
-      completedPhases: 3
-    });
-  };
-
-  const fetchFacultyStats = async () => {
-    // Mock data for now
-    setStats({
-      totalProjects: 12,
-      activeTeams: 8,
-      pendingApprovals: 5,
-      completedPhases: 25
-    });
-  };
-
-  const fetchAdminStats = async () => {
-    // Mock data for now
-    setStats({
-      totalProjects: 45,
-      activeTeams: 38,
-      pendingApprovals: 12,
-      completedPhases: 120
-    });
-  };
-
-  const fetchRecentActivities = async () => {
-    // Mock data for now
-    setRecentActivities([
-      {
-        id: 1,
-        type: 'project_submitted',
-        message: 'Project proposal submitted for review',
-        timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-        icon: BookOpen
-      },
-      {
-        id: 2,
-        type: 'feedback_received',
-        message: 'Received feedback from mentor on Phase 1',
-        timestamp: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-        icon: MessageSquare
-      },
-      {
-        id: 3,
-        type: 'deadline_approaching',
-        message: 'Phase 2 submission deadline in 3 days',
-        timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-        icon: Clock
-      }
-    ]);
-  };
-
-  const fetchUpcomingDeadlines = async () => {
-    // Mock data for now
-    setUpcomingDeadlines([
-      {
-        id: 1,
-        title: 'Phase 2 Implementation',
-        dueDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'pending'
-      },
-      {
-        id: 2,
-        title: 'Mid-Review Presentation',
-        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'pending'
-      },
-      {
-        id: 3,
-        title: 'Final Documentation',
-        dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'upcoming'
-      }
-    ]);
+  const mergeAndSortActivities = (current, previous) => {
+    // Deduplicate by id
+    const map = new Map();
+    [...previous, ...current].forEach(a => { map.set(a.id, a); });
+    return Array.from(map.values()).sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 10);
   };
 
   const getGreeting = () => {
