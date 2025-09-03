@@ -18,7 +18,11 @@ import {
   Calendar,
   AlertCircle,
   Check,
-  X
+  X,
+  Bell,
+  MessageCircle,
+  ThumbsUp,
+  Eye
 } from 'lucide-react';
 
 const TeamsPage = () => {
@@ -36,6 +40,8 @@ const TeamsPage = () => {
   const [notification, setNotification] = useState({ show: false, message: '', type: '' });
   const [editingTeam, setEditingTeam] = useState(null);
   const [newMaxMembers, setNewMaxMembers] = useState(4);
+  const [teamNotifications, setTeamNotifications] = useState([]);
+  const [showNotifications, setShowNotifications] = useState(false);
 
   // Show notification helper
   const showNotification = (message, type = 'success') => {
@@ -51,6 +57,7 @@ const TeamsPage = () => {
     let teamsUnsubscribe = null;
     let studentsUnsubscribe = null;
     let availableTeamsUnsubscribe = null;
+    let notificationsUnsubscribe = null;
 
     const fetchFallbackData = async () => {
       try {
@@ -170,6 +177,24 @@ const TeamsPage = () => {
           });
         }
 
+        // Set up real-time listener for team notifications
+        if (userProfile.teamId) {
+          const notificationsQuery = query(
+            collection(db, 'teamNotifications'),
+            where('teamId', '==', userProfile.teamId),
+            where('read', '==', false)
+          );
+          notificationsUnsubscribe = onSnapshot(notificationsQuery, (snapshot) => {
+            const notificationsData = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            })).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            setTeamNotifications(notificationsData);
+          }, (error) => {
+            console.error('Error listening to notifications:', error);
+          });
+        }
+
       } catch (error) {
         console.error('Error setting up real-time listeners:', error);
         fetchFallbackData();
@@ -185,8 +210,23 @@ const TeamsPage = () => {
       if (teamsUnsubscribe) teamsUnsubscribe();
       if (studentsUnsubscribe) studentsUnsubscribe();
       if (availableTeamsUnsubscribe) availableTeamsUnsubscribe();
+      if (notificationsUnsubscribe) notificationsUnsubscribe();
     };
   }, [userProfile]);
+
+  // Handle clicks outside notifications dropdown
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showNotifications && !event.target.closest('.notifications-dropdown')) {
+        setShowNotifications(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showNotifications]);
 
   const createTeam = async () => {
     if (!teamName.trim() || !userProfile) return;
@@ -302,6 +342,19 @@ const TeamsPage = () => {
     }
   };
 
+  const markNotificationAsRead = async (notificationId) => {
+    const result = await safeFirestoreOperation(async () => {
+      await updateDoc(doc(db, 'teamNotifications', notificationId), {
+        read: true
+      });
+      return { success: true };
+    });
+
+    if (!result?.success) {
+      console.error('Failed to mark notification as read');
+    }
+  };
+
   const filteredTeams = availableTeams.filter(team =>
     team.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     (team.description && team.description.toLowerCase().includes(searchQuery.toLowerCase()))
@@ -353,24 +406,90 @@ const TeamsPage = () => {
               </p>
             </div>
 
-            {userProfile?.role === 'student' && !myTeam && (
-              <div className="flex space-x-3">
-                <button
-                  onClick={() => setShowCreateTeam(true)}
-                  className="btn-primary flex items-center space-x-2"
-                >
-                  <Plus size={16} />
-                  <span>Create Team</span>
-                </button>
-                <button
-                  onClick={() => setShowJoinTeam(true)}
-                  className="btn-outline flex items-center space-x-2"
-                >
-                  <UserPlus size={16} />
-                  <span>Join Team</span>
-                </button>
-              </div>
-            )}
+            <div className="flex items-center space-x-4">
+              {/* Notification Bell */}
+              {myTeam && (
+                <div className="relative">
+                  <button
+                    onClick={() => setShowNotifications(!showNotifications)}
+                    className="relative p-2 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors"
+                  >
+                    <Bell size={20} />
+                    {teamNotifications.length > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">
+                        {teamNotifications.length}
+                      </span>
+                    )}
+                  </button>
+
+                  {/* Notifications Dropdown */}
+                  {showNotifications && (
+                    <div className="notifications-dropdown absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-lg border z-50">
+                      <div className="p-4 border-b">
+                        <h3 className="font-semibold text-gray-900">Team Notifications</h3>
+                      </div>
+                      <div className="max-h-64 overflow-y-auto">
+                        {teamNotifications.length === 0 ? (
+                          <div className="p-4 text-center text-gray-500">
+                            No new notifications
+                          </div>
+                        ) : (
+                          teamNotifications.map((notification) => (
+                            <div
+                              key={notification.id}
+                              className="p-4 border-b last:border-b-0 hover:bg-gray-50 cursor-pointer"
+                              onClick={() => markNotificationAsRead(notification.id)}
+                            >
+                              <div className="flex items-start space-x-3">
+                                <div className="flex-shrink-0">
+                                  {notification.type === 'review' ? (
+                                    <MessageCircle className="w-5 h-5 text-blue-500" />
+                                  ) : notification.type === 'acceptance' ? (
+                                    <ThumbsUp className="w-5 h-5 text-green-500" />
+                                  ) : (
+                                    <Eye className="w-5 h-5 text-purple-500" />
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium text-gray-900">
+                                    {notification.title}
+                                  </p>
+                                  <p className="text-sm text-gray-600 mt-1">
+                                    {notification.message}
+                                  </p>
+                                  <p className="text-xs text-gray-400 mt-1">
+                                    {notification.createdAt?.toDate().toLocaleDateString()}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {userProfile?.role === 'student' && !myTeam && (
+                <div className="flex space-x-3">
+                  <button
+                    onClick={() => setShowCreateTeam(true)}
+                    className="btn-primary flex items-center space-x-2"
+                  >
+                    <Plus size={16} />
+                    <span>Create Team</span>
+                  </button>
+                  <button
+                    onClick={() => setShowJoinTeam(true)}
+                    className="btn-outline flex items-center space-x-2"
+                  >
+                    <UserPlus size={16} />
+                    <span>Join Team</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Student View - My Team */}
