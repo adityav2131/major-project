@@ -109,24 +109,42 @@ const AuthForm = () => {
           })
         };
 
-        await setDoc(doc(db, 'users', user.uid), userProfile);
-        router.push('/dashboard');
+        try {
+          await setDoc(doc(db, 'users', user.uid), userProfile);
+          router.push('/dashboard');
+        } catch (firestoreError) {
+          console.error('Firestore error:', firestoreError);
+          setError('Account created but profile setup failed. Please contact support.');
+        }
       }
     } catch (error) {
       console.error('Authentication error:', error);
       
-      if (error.code === 'auth/user-not-found') {
-        setError('No account found with this email address');
-      } else if (error.code === 'auth/wrong-password') {
-        setError('Incorrect password');
-      } else if (error.code === 'auth/email-already-in-use') {
-        setError('An account with this email already exists');
-      } else if (error.code === 'auth/weak-password') {
-        setError('Password should be at least 6 characters');
-      } else if (error.code === 'auth/invalid-email') {
-        setError('Invalid email address');
-      } else {
-        setError('An error occurred. Please try again.');
+      // Handle specific Firebase auth errors
+      switch (error.code) {
+        case 'auth/user-not-found':
+          setError('No account found with this email address');
+          break;
+        case 'auth/wrong-password':
+          setError('Incorrect password');
+          break;
+        case 'auth/email-already-in-use':
+          setError('An account with this email already exists');
+          break;
+        case 'auth/weak-password':
+          setError('Password should be at least 6 characters');
+          break;
+        case 'auth/invalid-email':
+          setError('Invalid email address');
+          break;
+        case 'auth/too-many-requests':
+          setError('Too many failed attempts. Please try again later.');
+          break;
+        case 'auth/network-request-failed':
+          setError('Network error. Please check your internet connection.');
+          break;
+        default:
+          setError('An error occurred. Please try again.');
       }
     } finally {
       setLoading(false);
@@ -158,6 +176,7 @@ const AuthForm = () => {
               width={80}
               height={80}
               className="rounded-full shadow-lg"
+              style={{ width: 'auto', height: 'auto' }}
             />
           </div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">

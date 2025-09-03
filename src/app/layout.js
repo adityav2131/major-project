@@ -14,6 +14,8 @@ const geistMono = Geist_Mono({
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/contexts/AuthContext";
+import ErrorBoundary from "./components/ErrorBoundary";
+import FirebaseDebug from "./components/FirebaseDebug";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -27,9 +29,12 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body className={inter.className}>
-        <AuthProvider>
-          {children}
-        </AuthProvider>
+        <ErrorBoundary>
+          <AuthProvider>
+            {children}
+            <FirebaseDebug />
+          </AuthProvider>
+        </ErrorBoundary>
       </body>
     </html>
   );

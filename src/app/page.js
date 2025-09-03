@@ -1,33 +1,48 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import AuthForm from './components/AuthForm';
+import LoadingScreen from './components/LoadingScreen';
 
 export default function Home() {
-  const { user, loading } = useAuth();
+  const { user, loading, error } = useAuth();
   const router = useRouter();
+  const [redirecting, setRedirecting] = useState(false);
 
   useEffect(() => {
-    if (!loading && user) {
+    if (!loading && user && !redirecting) {
+      setRedirecting(true);
       router.push('/dashboard');
     }
-  }, [user, loading, router]);
+  }, [user, loading, router, redirecting]);
 
   if (loading) {
+    return <LoadingScreen message="Initializing application..." />;
+  }
+
+  if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading...</p>
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-red-50 to-orange-50">
+        <div className="text-center max-w-md mx-auto p-6">
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+            <strong className="font-bold">Connection Error: </strong>
+            <span className="block sm:inline">Unable to connect to the server. Please check your internet connection and try again.</span>
+          </div>
+          <button 
+            onClick={() => window.location.reload()} 
+            className="btn-primary"
+          >
+            Retry
+          </button>
         </div>
       </div>
     );
   }
 
-  if (user) {
-    return null; // Will redirect to dashboard
+  if (user && redirecting) {
+    return <LoadingScreen message="Redirecting to dashboard..." />;
   }
 
   return <AuthForm />;

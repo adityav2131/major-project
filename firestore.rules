@@ -1,0 +1,52 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users can read/write their own profile
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Teams: authenticated users can read all, write if they're a member
+    match /teams/{teamId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        (request.auth.uid in resource.data.members || 
+         request.auth.uid in resource.data.invitedMembers ||
+         !exists(/databases/$(database)/documents/teams/$(teamId)));
+    }
+    
+    // Projects: authenticated users can read all, write if they're team members
+    match /projects/{projectId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        (request.auth.uid in get(/databases/$(database)/documents/teams/$(resource.data.teamId)).data.members ||
+         !exists(/databases/$(database)/documents/projects/$(projectId)));
+    }
+    
+    // Project phases: readable by all authenticated users
+    match /phases/{phaseId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Submissions: readable by all, writable by team members
+    match /submissions/{submissionId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+    
+    // Reviews: readable by all, writable by faculty and admins
+    match /reviews/{reviewId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['faculty', 'admin'];
+    }
+    
+    // Team join requests
+    match /teamRequests/{requestId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

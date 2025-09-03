@@ -47,12 +47,13 @@ const Header = () => {
           {/* Logo and Title */}
           <div className="flex items-center space-x-4">
             <Link href="/dashboard" className="flex items-center space-x-3">
-              <Image
+                            <Image
                 src="/university-logo.jpeg"
-                alt="Graphic Era Hill University"
+                alt="University Logo"
                 width={40}
                 height={40}
-                className="rounded-full"
+                className="object-contain"
+                style={{ width: 'auto', height: 'auto' }}
               />
               <div className="hidden md:block">
                 <h1 className="text-xl font-bold text-gray-900">
