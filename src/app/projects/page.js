@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, onSnapshot, doc, orderBy } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import Header from '@/app/components/Header';
 import ProtectedRoute from '@/app/components/ProtectedRoute';
@@ -11,7 +11,6 @@ import {
   Plus,
   Search,
   Filter,
-  Calendar,
   User,
   CheckCircle,
   Clock,
@@ -19,18 +18,24 @@ import {
   FileText,
   Users,
   Star,
-  MessageCircle
+  MessageCircle,
+  X
 } from 'lucide-react';
 
 const ProjectsPage = () => {
   const { user, userProfile } = useAuth();
-  const [projects, setProjects] = useState([]);
-  const [myProject, setMyProject] = useState(null);
+  const [projects, setProjects] = useState([]); // For faculty/admin
+  const [myProject, setMyProject] = useState(null); // For students
   const [loading, setLoading] = useState(true);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   
+  // New state for feedback history
+  const [showFeedbackHistory, setShowFeedbackHistory] = useState(false);
+  const [feedbackHistory, setFeedbackHistory] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const [projectForm, setProjectForm] = useState({
     title: '',
     currentProblem: '',
@@ -42,56 +47,78 @@ const ProjectsPage = () => {
   });
 
   useEffect(() => {
-    let unsubscribe = null;
+    if (!userProfile) return;
 
-    const fetchData = async () => {
-      if (!userProfile) return;
-      try {
-        setLoading(true);
-        if (userProfile.role === 'student') {
-          if (userProfile.teamId) {
-            const projectsQuery = query(
-              collection(db, 'projects'),
-              where('teamId', '==', userProfile.teamId)
-            );
-            // Real-time listener for student's project
-            unsubscribe = onSnapshot(projectsQuery, (snapshot) => {
-              if (!snapshot.empty) {
-                const projectData = {
-                  id: snapshot.docs[0].id,
-                  ...snapshot.docs[0].data()
-                };
-                setMyProject(projectData);
-              }
-            });
+    let unsubscribe = () => {};
+
+    try {
+      setLoading(true);
+
+      if (userProfile.role === 'student' && userProfile.teamId) {
+        // --- REAL-TIME LISTENER FOR STUDENT'S PROJECT ---
+        const projectsQuery = query(
+          collection(db, 'projects'),
+          where('teamId', '==', userProfile.teamId)
+        );
+        unsubscribe = onSnapshot(projectsQuery, (snapshot) => {
+          if (!snapshot.empty) {
+            const projectData = {
+              id: snapshot.docs[0].id,
+              ...snapshot.docs[0].data()
+            };
+            setMyProject(projectData);
+          } else {
+            setMyProject(null);
           }
-        } else {
-          let projectsQueryRef;
-            if (userProfile.role === 'faculty') {
-              projectsQueryRef = query(
-                collection(db, 'projects'),
-                where('mentorId', '==', user.uid)
-              );
-            } else {
-              projectsQueryRef = query(collection(db, 'projects'));
-            }
-            const projectsSnapshot = await getDocs(projectsQueryRef);
-            const projectsData = projectsSnapshot.docs.map(doc => ({
-              id: doc.id,
-              ...doc.data()
-            }));
-            setProjects(projectsData);
-        }
-      } catch (error) {
-        console.error('Error fetching projects:', error);
-      } finally {
-        setLoading(false);
+          setLoading(false);
+        });
+      } else {
+        // One-time fetch for faculty/admin (can be converted to onSnapshot if needed)
+        const fetchAdminFacultyData = async () => {
+          let projectsQuery;
+          if (userProfile.role === 'faculty') {
+            projectsQuery = query(
+              collection(db, 'projects'),
+              where('mentorId', '==', user.uid)
+            );
+          } else { // Admin
+            projectsQuery = query(collection(db, 'projects'));
+          }
+          const projectsSnapshot = await getDocs(projectsQuery);
+          const projectsData = projectsSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }));
+          setProjects(projectsData);
+          setLoading(false);
+        };
+        fetchAdminFacultyData();
       }
-    };
-
-    fetchData();
-    return () => { if (unsubscribe) unsubscribe(); };
+    } catch (error) {
+      console.error('Error fetching projects:', error);
+      setLoading(false);
+    }
+    
+    // Cleanup the listener when the component unmounts
+    return () => unsubscribe();
   }, [userProfile, user]);
+
+  const handleShowFeedbackHistory = async () => {
+      if (!myProject) return;
+      try {
+          const evaluationsQuery = query(
+              collection(db, 'evaluations'),
+              where('projectId', '==', myProject.id),
+              orderBy('submittedAt', 'desc')
+          );
+          const snapshot = await getDocs(evaluationsQuery);
+          const history = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          setFeedbackHistory(history);
+          setShowFeedbackHistory(true);
+      } catch (error) {
+          console.error("Error fetching feedback history: ", error);
+      }
+  };
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -102,28 +129,42 @@ const ProjectsPage = () => {
   };
 
   const submitProject = async () => {
+    if (isSubmitting) return;
     if (!projectForm.title.trim() || !projectForm.currentProblem.trim() || !projectForm.proposedSolution.trim()) {
       alert('Please fill in all required fields');
       return;
     }
+    if (!userProfile?.teamId) {
+      alert('You must be in a team to submit a project.');
+      return;
+    }
+    if (myProject) {
+      alert('A project for this team already exists.');
+      return;
+    }
 
     try {
+      setIsSubmitting(true);
       const newProject = {
-        ...projectForm,
+        title: projectForm.title.trim(),
+        currentProblem: projectForm.currentProblem.trim(),
+        proposedSolution: projectForm.proposedSolution.trim(),
+        technologies: projectForm.technologies.trim(),
+        objectives: projectForm.objectives.trim(),
+        methodology: projectForm.methodology.trim(),
+        expectedOutcome: projectForm.expectedOutcome.trim(),
         teamId: userProfile.teamId,
         submittedBy: user.uid,
         submittedAt: new Date().toISOString(),
         status: 'pending_approval',
         mentorId: null,
-        phases: [],
         currentPhase: 1,
-        totalPhases: 5, // Will be set by admin
-        evaluations: []
+        totalPhases: 5,
+        lastFeedback: null,
+        lastFeedbackAt: null,
+        lastRating: null
       };
-
       await addDoc(collection(db, 'projects'), newProject);
-      
-      // Reset form and close modal
       setProjectForm({
         title: '',
         currentProblem: '',
@@ -134,11 +175,11 @@ const ProjectsPage = () => {
         expectedOutcome: ''
       });
       setShowCreateProject(false);
-      
-      // Refresh data
-      window.location.reload();
     } catch (error) {
       console.error('Error submitting project:', error);
+      alert('Failed to submit project. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -188,6 +229,7 @@ const ProjectsPage = () => {
     );
   }
 
+
   return (
     <ProtectedRoute>
       <div className="min-h-screen bg-gray-50">
@@ -206,7 +248,6 @@ const ProjectsPage = () => {
                 }
               </p>
             </div>
-            
             {userProfile?.role === 'student' && userProfile.teamId && !myProject && (
               <button
                 onClick={() => setShowCreateProject(true)}
@@ -218,16 +259,9 @@ const ProjectsPage = () => {
             )}
           </div>
 
-          {/* Student View - My Project */}
           {userProfile?.role === 'student' && (
             <div className="mb-8">
-              {!userProfile.teamId ? (
-                <div className="card text-center py-12">
-                  <Users className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">Join a team first</h3>
-                  <p className="text-gray-600">You need to be part of a team before you can submit a project.</p>
-                </div>
-              ) : myProject ? (
+              {myProject ? (
                 <div className="card">
                   <div className="flex justify-between items-start mb-6">
                     <div className="flex-1">
@@ -246,35 +280,27 @@ const ProjectsPage = () => {
                       </p>
                     </div>
                   </div>
-
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div className="space-y-4">
                       <div>
                         <h3 className="font-medium text-gray-900 mb-2">Current Problem</h3>
                         <p className="text-gray-700 text-sm">{myProject.currentProblem}</p>
                       </div>
-                      
                       <div>
                         <h3 className="font-medium text-gray-900 mb-2">Proposed Solution</h3>
                         <p className="text-gray-700 text-sm">{myProject.proposedSolution}</p>
                       </div>
-                      
-                      {myProject.technologies && (
-                        <div>
-                          <h3 className="font-medium text-gray-900 mb-2">Technologies</h3>
-                          <p className="text-gray-700 text-sm">{myProject.technologies}</p>
-                        </div>
-                      )}
                     </div>
-
+                    
                     <div className="space-y-4">
-                      <div className="bg-gray-50 rounded-lg p-4">
+                       <div className="bg-gray-50 rounded-lg p-4">
                         <h3 className="font-medium text-gray-900 mb-3">Project Timeline</h3>
                         <div className="space-y-2">
-                          {[1, 2, 3, 4, 5].map((phase) => (
+                          {[...Array(myProject.totalPhases)].map((_, i) => i + 1).map((phase) => (
                             <div key={phase} className="flex items-center space-x-2">
                               <div className={`w-3 h-3 rounded-full ${
-                                phase <= myProject.currentPhase ? 'bg-green-500' : 'bg-gray-300'
+                                phase < myProject.currentPhase ? 'bg-green-500' :
+                                phase === myProject.currentPhase ? 'bg-blue-500' : 'bg-gray-300'
                               }`} />
                               <span className={`text-sm ${
                                 phase <= myProject.currentPhase ? 'text-gray-900 font-medium' : 'text-gray-500'
@@ -286,31 +312,37 @@ const ProjectsPage = () => {
                         </div>
                       </div>
 
-                      <div className="bg-blue-50 rounded-lg p-4">
+                       <div className="bg-blue-50 rounded-lg p-4">
                         <h3 className="font-medium text-gray-900 mb-2">Mentor Feedback</h3>
                         {myProject.mentorId ? (
                           myProject.lastFeedback ? (
-                            <div className="space-y-2">
-                              <p className="text-sm text-gray-700 whitespace-pre-line">{myProject.lastFeedback}</p>
-                              {myProject.lastRating && (
-                                <div className="flex items-center space-x-1">
-                                  {[1,2,3,4,5].map(star => (
-                                    <svg key={star} className={`w-4 h-4 ${star <= myProject.lastRating ? 'text-yellow-400 fill-current' : 'text-gray-300'}`} viewBox="0 0 20 20" fill="currentColor">
-                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                                    </svg>
-                                  ))}
-                                </div>
-                              )}
-                              <p className="text-xs text-gray-500">Updated {myProject.lastFeedbackAt ? new Date(myProject.lastFeedbackAt).toLocaleString() : ''}</p>
-                              <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">
+                            <div className="space-y-3">
+                              <div className="flex items-center space-x-1">
+                                {[1, 2, 3, 4, 5].map((star) => (
+                                  <Star
+                                    key={star}
+                                    size={16}
+                                    className={star <= myProject.lastRating ? 'text-yellow-400 fill-current' : 'text-gray-300'}
+                                  />
+                                ))}
+                              </div>
+                              {/* --- FIX APPLIED HERE --- */}
+                              <p className="text-sm text-gray-700 italic">&ldquo;{myProject.lastFeedback}&rdquo;</p>
+                              <p className="text-xs text-gray-500">
+                                Received on {new Date(myProject.lastFeedbackAt).toLocaleDateString()}
+                              </p>
+                              <button 
+                                onClick={handleShowFeedbackHistory}
+                                className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+                              >
                                 View all feedback
                               </button>
                             </div>
                           ) : (
-                            <p className="text-sm text-gray-600">Waiting for mentor feedback</p>
+                            <p className="text-sm text-gray-600">No feedback provided yet.</p>
                           )
                         ) : (
-                          <p className="text-sm text-gray-600">Waiting for mentor assignment</p>
+                          <p className="text-sm text-gray-600">Waiting for mentor assignment.</p>
                         )}
                       </div>
                     </div>
@@ -334,234 +366,150 @@ const ProjectsPage = () => {
               )}
             </div>
           )}
-
-          {/* Faculty/Admin View - All Projects */}
-          {(userProfile?.role === 'faculty' || userProfile?.role === 'admin') && (
-            <div>
-              {/* Search and Filter */}
-              <div className="flex flex-col sm:flex-row gap-4 mb-6">
-                <div className="flex-1">
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={16} />
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="input-field pl-10"
-                      placeholder="Search projects..."
-                    />
-                  </div>
-                </div>
-                
-                <div className="sm:w-48">
-                  <select
-                    value={filterStatus}
-                    onChange={(e) => setFilterStatus(e.target.value)}
-                    className="input-field"
-                  >
-                    <option value="all">All Status</option>
-                    <option value="pending_approval">Pending Approval</option>
-                    <option value="approved">Approved</option>
-                    <option value="needs_revision">Needs Revision</option>
-                    <option value="in_progress">In Progress</option>
-                    <option value="completed">Completed</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Projects Grid */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {filteredProjects.map((project) => (
-                  <div key={project.id} className="card">
-                    <div className="flex justify-between items-start mb-4">
-                      <div className="flex-1">
-                        <h3 className="text-lg font-semibold text-gray-900 mb-1">{project.title}</h3>
-                        <p className="text-sm text-gray-600">
-                          Submitted {new Date(project.submittedAt).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <span className={getStatusBadge(project.status).className}>
-                        {getStatusBadge(project.status).label}
-                      </span>
-                    </div>
-
-                    <p className="text-gray-700 text-sm mb-4 line-clamp-3">
-                      {project.currentProblem}
-                    </p>
-
-                    <div className="flex items-center justify-between text-sm text-gray-500 mb-4">
-                      <span>Phase {project.currentPhase}/{project.totalPhases}</span>
-                      <div className="flex items-center space-x-4">
-                        <span className="flex items-center space-x-1">
-                          <User size={14} />
-                          <span>Team</span>
-                        </span>
-                        <span className="flex items-center space-x-1">
-                          <MessageCircle size={14} />
-                          <span>0 comments</span>
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="flex space-x-2">
-                      <button className="btn-primary text-sm flex-1">
-                        Review Project
-                      </button>
-                      <button className="btn-outline text-sm px-3">
-                        <MessageCircle size={14} />
-                      </button>
-                      <button className="btn-outline text-sm px-3">
-                        <Star size={14} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {filteredProjects.length === 0 && (
-                <div className="card text-center py-12">
-                  <BookOpen className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">
-                    {projects.length === 0 ? 'No projects yet' : 'No projects match your search'}
-                  </h3>
-                  <p className="text-gray-600">
-                    {projects.length === 0 
-                      ? 'Projects will appear here once students start submitting them.'
-                      : 'Try adjusting your search criteria or filters.'
-                    }
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
         </main>
 
         {/* Create Project Modal */}
         {showCreateProject && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-lg max-w-4xl w-full p-6 max-h-[90vh] overflow-y-auto">
-              <h2 className="text-2xl font-semibold text-gray-900 mb-6">Submit Project Proposal</h2>
-              
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="space-y-4">
+            <div className="bg-white rounded-lg max-w-2xl w-full p-6 max-h-[85vh] overflow-y-auto">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-semibold text-gray-900">Submit New Project</h2>
+                <button
+                  onClick={() => { if (!isSubmitting) setShowCreateProject(false); }}
+                  className="p-1 text-gray-500 hover:text-gray-700"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="space-y-5">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Project Title *</label>
+                  <input
+                    name="title"
+                    value={projectForm.title}
+                    onChange={handleInputChange}
+                    className="input-field"
+                    placeholder="Enter concise project title"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Current Problem *</label>
+                  <textarea
+                    name="currentProblem"
+                    value={projectForm.currentProblem}
+                    onChange={handleInputChange}
+                    rows={3}
+                    className="input-field"
+                    placeholder="Describe the problem you aim to solve"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Proposed Solution *</label>
+                  <textarea
+                    name="proposedSolution"
+                    value={projectForm.proposedSolution}
+                    onChange={handleInputChange}
+                    rows={3}
+                    className="input-field"
+                    placeholder="Outline your solution approach"
+                  />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Project Title *
-                    </label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Technologies</label>
                     <input
-                      type="text"
-                      name="title"
-                      value={projectForm.title}
-                      onChange={handleInputChange}
-                      className="input-field"
-                      placeholder="Enter project title"
-                      required
-                    />
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Current Problem Statement *
-                    </label>
-                    <textarea
-                      name="currentProblem"
-                      value={projectForm.currentProblem}
-                      onChange={handleInputChange}
-                      className="input-field"
-                      rows={4}
-                      placeholder="Describe the current problem you're trying to solve"
-                      required
-                    />
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Proposed Solution *
-                    </label>
-                    <textarea
-                      name="proposedSolution"
-                      value={projectForm.proposedSolution}
-                      onChange={handleInputChange}
-                      className="input-field"
-                      rows={4}
-                      placeholder="Describe your proposed solution"
-                      required
-                    />
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Technologies & Tools
-                    </label>
-                    <input
-                      type="text"
                       name="technologies"
                       value={projectForm.technologies}
                       onChange={handleInputChange}
                       className="input-field"
-                      placeholder="e.g., React, Node.js, MongoDB, Python"
+                      placeholder="e.g. React, Node.js, Firebase"
                     />
                   </div>
-                </div>
-
-                <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Project Objectives
-                    </label>
-                    <textarea
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Objectives</label>
+                    <input
                       name="objectives"
                       value={projectForm.objectives}
                       onChange={handleInputChange}
                       className="input-field"
-                      rows={3}
-                      placeholder="List the main objectives of your project"
+                      placeholder="Primary project goals"
                     />
                   </div>
-                  
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Methodology
-                    </label>
-                    <textarea
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Methodology</label>
+                    <input
                       name="methodology"
                       value={projectForm.methodology}
                       onChange={handleInputChange}
                       className="input-field"
-                      rows={3}
-                      placeholder="Describe the approach and methodology you'll use"
+                      placeholder="Planned process / model"
                     />
                   </div>
-                  
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Expected Outcome
-                    </label>
-                    <textarea
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Expected Outcome</label>
+                    <input
                       name="expectedOutcome"
                       value={projectForm.expectedOutcome}
                       onChange={handleInputChange}
                       className="input-field"
-                      rows={3}
-                      placeholder="What do you expect to achieve with this project?"
+                      placeholder="End result / deliverables"
                     />
                   </div>
                 </div>
+                <div className="flex space-x-3 pt-2">
+                  <button
+                    onClick={submitProject}
+                    disabled={isSubmitting || !projectForm.title.trim() || !projectForm.currentProblem.trim() || !projectForm.proposedSolution.trim()}
+                    className="btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isSubmitting ? 'Submitting...' : 'Submit Project'}
+                  </button>
+                  <button
+                    onClick={() => { if (!isSubmitting) setShowCreateProject(false); }}
+                    className="btn-outline flex-1"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500">Fields marked * are required.</p>
               </div>
-              
-              <div className="flex space-x-4 mt-8">
-                <button
-                  onClick={submitProject}
-                  className="btn-primary flex-1"
-                >
-                  Submit Project Proposal
+            </div>
+          </div>
+        )}
+
+        {showFeedbackHistory && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-lg max-w-2xl w-full p-6 max-h-[80vh] overflow-y-auto">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-semibold text-gray-900">Feedback History</h2>
+                <button onClick={() => setShowFeedbackHistory(false)} className="p-1">
+                  <X size={20} className="text-gray-500" />
                 </button>
-                <button
-                  onClick={() => setShowCreateProject(false)}
-                  className="btn-outline flex-1"
-                >
-                  Cancel
-                </button>
+              </div>
+              <div className="space-y-4">
+                {feedbackHistory.length > 0 ? (
+                  feedbackHistory.map(item => (
+                    <div key={item.id} className="p-4 border border-gray-200 rounded-lg bg-gray-50">
+                      <div className="flex justify-between items-center mb-2">
+                        <div className="flex items-center space-x-1">
+                          {[1, 2, 3, 4, 5].map((star) => (
+                            <Star
+                              key={star}
+                              size={16}
+                              className={star <= item.rating ? 'text-yellow-400 fill-current' : 'text-gray-300'}
+                            />
+                          ))}
+                        </div>
+                        <span className="text-xs text-gray-500">
+                          {new Date(item.submittedAt).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-700">{item.feedback}</p>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-center text-gray-500">No feedback history found.</p>
+                )}
               </div>
             </div>
           </div>
