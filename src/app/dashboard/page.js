@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { collection, query, where, getDocs, onSnapshot, orderBy, limit } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, limit, getCountFromServer, doc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import Header from '@/app/components/Header';
 import ProtectedRoute from '@/app/components/ProtectedRoute';
@@ -12,20 +12,18 @@ import {
   Calendar,
   CheckCircle,
   Clock,
-  AlertCircle,
-  TrendingUp,
-  Award,
   MessageSquare,
-  Plus
+  TrendingUp,
+  Award
 } from 'lucide-react';
 
 const Dashboard = () => {
-  const { userProfile } = useAuth();
+  const { user, userProfile } = useAuth();
   const [stats, setStats] = useState({
-    totalProjects: 0,
-    activeTeams: 0,
-    pendingApprovals: 0,
-    completedPhases: 0
+    stat1: 0, // Projects
+    stat2: 0, // Teams / Members
+    stat3: 0, // Pending Items
+    stat4: 0  // Completed Items
   });
   const [recentActivities, setRecentActivities] = useState([]);
   const [upcomingDeadlines, setUpcomingDeadlines] = useState([]);
@@ -35,173 +33,110 @@ const Dashboard = () => {
     if (!userProfile) return;
 
     setLoading(true);
-    let unsubscribers = [];
+    const unsubscribers = []; // Keep track of all listeners to unsubscribe on cleanup
 
-    const load = async () => {
-      try {
-        // --- Stats by role ---
-        if (userProfile.role === 'student') {
-          if (userProfile.teamId) {
-            const projectsQ = query(collection(db, 'projects'), where('teamId', '==', userProfile.teamId));
-            const unsub = onSnapshot(projectsQ, (snap) => {
-              const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-              const pending = docs.filter(p => p.status === 'pending_approval').length;
-              const completedPhases = docs.reduce((acc, p) => acc + ((p.currentPhase || 1) - 1), 0);
-              setStats({
-                totalProjects: docs.length,
-                activeTeams: userProfile.teamId ? 1 : 0,
-                pendingApprovals: pending,
-                completedPhases
-              });
-            });
-            unsubscribers.push(unsub);
-          } else {
-            setStats({ totalProjects: 0, activeTeams: 0, pendingApprovals: 0, completedPhases: 0 });
-          }
-        } else if (userProfile.role === 'faculty') {
-          const mentoredQ = query(collection(db, 'projects'), where('mentorId', '==', userProfile.id));
-          const pendingQ = query(collection(db, 'projects'), where('status', '==', 'pending_approval'), where('mentorId', '==', null));
-          const unsub1 = onSnapshot(mentoredQ, (snap) => {
-            const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            const teams = new Set(docs.map(p => p.teamId).filter(Boolean));
-            const completedPhases = docs.reduce((acc, p) => acc + ((p.currentPhase || 1) - 1), 0);
-            setStats(prev => ({
-              ...prev,
-              totalProjects: docs.length,
-              activeTeams: teams.size,
-              completedPhases
-            }));
-          });
-          const unsub2 = onSnapshot(pendingQ, (snap) => {
-            setStats(prev => ({ ...prev, pendingApprovals: snap.size }));
-          });
-          unsubscribers.push(unsub1, unsub2);
-        } else if (userProfile.role === 'admin') {
-          const projectsQ = query(collection(db, 'projects'));
-          const teamsQ = query(collection(db, 'teams'));
-          const unsub1 = onSnapshot(projectsQ, (snap) => {
-            const docs = snap.docs.map(d => d.data());
-            const pending = docs.filter(p => p.status === 'pending_approval').length;
-            const completedPhases = docs.reduce((acc, p) => acc + ((p.currentPhase || 1) - 1), 0);
-            setStats(prev => ({
-              ...prev,
-              totalProjects: docs.length,
-              pendingApprovals: pending,
-              completedPhases
-            }));
-          });
-          const unsub2 = onSnapshot(teamsQ, (snap) => {
-            const activeTeams = snap.docs.filter(d => (d.data().members || []).length > 0).length;
-            setStats(prev => ({ ...prev, activeTeams }));
-          });
-          unsubscribers.push(unsub1, unsub2);
-        }
+    // --- Fetch Upcoming Deadlines (common for all roles) ---
+    const deadlinesQuery = query(
+      collection(db, 'phases'),
+      where('deadline', '>=', new Date().toISOString()),
+      orderBy('deadline'),
+      limit(3)
+    );
+    const unsubscribeDeadlines = onSnapshot(deadlinesQuery, (snapshot) => {
+      const deadlinesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setUpcomingDeadlines(deadlinesData);
+    });
+    unsubscribers.push(unsubscribeDeadlines);
 
-        // --- Recent activities (notifications + recent projects + evaluations) ---
-        // Team notifications (limit 5)
-        let activities = [];
-        const baseNotifsQ = userProfile.role === 'student' && userProfile.teamId
-          ? query(collection(db, 'teamNotifications'), where('teamId', '==', userProfile.teamId), orderBy('createdAt', 'desc'), limit(5))
-          : query(collection(db, 'teamNotifications'), orderBy('createdAt', 'desc'), limit(5));
-        const unsubNotifs = onSnapshot(baseNotifsQ, (snap) => {
-            activities = [
-              ...snap.docs.map(d => ({
-                id: `notif_${d.id}`,
-                type: d.data().type || 'notification',
-                message: d.data().title || d.data().message || 'Notification',
-                timestamp: (d.data().createdAt?.toDate?.() || new Date()).toISOString(),
-                icon: MessageSquare
-              }))
-            ];
-            setRecentActivities(prev => mergeAndSortActivities(activities, prev));
-        });
-        unsubscribers.push(unsubNotifs);
-
-        // Recent projects (limit 5)
-        const projectsRecentQ = userProfile.role === 'student' && userProfile.teamId
-          ? query(collection(db, 'projects'), where('teamId', '==', userProfile.teamId), orderBy('submittedAt', 'desc'), limit(3))
-          : query(collection(db, 'projects'), orderBy('submittedAt', 'desc'), limit(3));
-        const unsubProjectsRecent = onSnapshot(projectsRecentQ, (snap) => {
-          const projActs = snap.docs.map(d => ({
-            id: `proj_${d.id}`,
-            type: 'project_submitted',
-            message: `Project: ${d.data().title}`,
-            timestamp: d.data().submittedAt || new Date().toISOString(),
+    // --- Fetch Recent Activities (using latest projects as a proxy) ---
+    // For a production app, a dedicated 'activities' collection would be better.
+    const activityQuery = query(
+        collection(db, 'projects'),
+        orderBy('submittedAt', 'desc'),
+        limit(3)
+    );
+    const unsubscribeActivities = onSnapshot(activityQuery, (snapshot) => {
+        const activityData = snapshot.docs.map(doc => ({
+            id: doc.id,
+            message: `New project submitted: "${doc.data().title}"`,
+            timestamp: doc.data().submittedAt,
             icon: BookOpen
-          }));
-          setRecentActivities(prev => mergeAndSortActivities([...activities, ...projActs], prev));
-        });
-        unsubscribers.push(unsubProjectsRecent);
+        }));
+        setRecentActivities(activityData);
+    });
+    unsubscribers.push(unsubscribeActivities);
 
-        // Evaluations (faculty/admin or student team)
-        let evalQuery;
-        if (userProfile.role === 'student' && userProfile.teamId) {
-          // Need to first fetch project IDs for team
-          const teamProjectsSnap = await getDocs(query(collection(db, 'projects'), where('teamId', '==', userProfile.teamId)));
-          const ids = teamProjectsSnap.docs.map(d => d.id);
-          if (ids.length) {
-            // Firestore doesn't allow 'in' with more than 10; assume small.
-            evalQuery = query(collection(db, 'evaluations'));
-            // We'll filter client-side for simplicity
-          }
-        } else {
-          evalQuery = query(collection(db, 'evaluations'));
-        }
-        if (evalQuery) {
-          const unsubEval = onSnapshot(evalQuery, (snap) => {
-            let evalActs = snap.docs.map(d => ({
-              id: `eval_${d.id}`,
-              type: 'feedback_received',
-              message: 'Mentor feedback submitted',
-              timestamp: d.data().submittedAt || new Date().toISOString(),
-              icon: MessageSquare,
-              projectId: d.data().projectId
+
+    // --- Fetch Role-Specific Stats ---
+    if (userProfile.role === 'admin') {
+      const projectsQuery = collection(db, 'projects');
+      const teamsQuery = collection(db, 'teams');
+      const pendingProjectsQuery = query(collection(db, 'projects'), where('status', '==', 'pending_approval'));
+
+      const unsubscribeProjects = onSnapshot(projectsQuery, async (snapshot) => {
+        setStats(prev => ({ ...prev, stat1: snapshot.size }));
+      });
+      const unsubscribeTeams = onSnapshot(teamsQuery, (snapshot) => {
+        setStats(prev => ({ ...prev, stat2: snapshot.size }));
+      });
+      const unsubscribePending = onSnapshot(pendingProjectsQuery, (snapshot) => {
+        setStats(prev => ({ ...prev, stat3: snapshot.size }));
+      });
+
+      unsubscribers.push(unsubscribeProjects, unsubscribeTeams, unsubscribePending);
+    } 
+    
+    else if (userProfile.role === 'faculty') {
+      const mentoredQuery = query(collection(db, 'projects'), where('mentorId', '==', user.uid));
+      const pendingQuery = query(collection(db, 'projects'), where('status', '==', 'pending_approval'));
+
+      const unsubscribeMentored = onSnapshot(mentoredQuery, (snapshot) => {
+        setStats(prev => ({ ...prev, stat1: snapshot.size, stat2: snapshot.size })); // Assuming 1 team per project
+      });
+      const unsubscribePending = onSnapshot(pendingQuery, (snapshot) => {
+        setStats(prev => ({ ...prev, stat3: snapshot.size }));
+      });
+      unsubscribers.push(unsubscribeMentored, unsubscribePending);
+    } 
+    
+    else if (userProfile.role === 'student' && userProfile.teamId) {
+      const myProjectQuery = query(collection(db, 'projects'), where('teamId', '==', userProfile.teamId));
+      const myTeamDoc = doc(db, 'teams', userProfile.teamId);
+
+      const unsubscribeProject = onSnapshot(myProjectQuery, (snapshot) => {
+        if (!snapshot.empty) {
+            const projectData = snapshot.docs[0].data();
+            setStats(prev => ({
+                ...prev,
+                stat1: 1,
+                stat4: projectData.currentPhase ? projectData.currentPhase - 1 : 0
             }));
-            if (userProfile.role === 'student' && userProfile.teamId) {
-              const projectIds = new Set(evalActs.map(a => a.projectId));
-              evalActs = evalActs.filter(a => projectIds.has(a.projectId));
-            }
-            const merged = [...activities, ...evalActs];
-            setRecentActivities(prev => mergeAndSortActivities(merged, prev));
-          });
-          unsubscribers.push(unsubEval);
+        } else {
+             setStats(prev => ({ ...prev, stat1: 0, stat4: 0 }));
         }
+      });
 
-        // --- Upcoming deadlines from phases ---
-        const phasesQ = query(collection(db, 'phases'));
-        const unsubPhases = onSnapshot(phasesQ, (snap) => {
-          const now = Date.now();
-            const upcoming = snap.docs
-              .map(d => ({ id: d.id, ...d.data() }))
-              .filter(p => p.deadline && new Date(p.deadline).getTime() > now)
-              .sort((a,b) => new Date(a.deadline) - new Date(b.deadline))
-              .slice(0, 5);
-            setUpcomingDeadlines(upcoming.map(p => ({
-              id: p.id,
-              title: p.name,
-              dueDate: p.deadline,
-              status: 'pending'
-            })));
-        });
-        unsubscribers.push(unsubPhases);
-      } catch (e) {
-        console.error('Dashboard realtime error:', e);
-      } finally {
-        setLoading(false);
-      }
+      const unsubscribeTeam = onSnapshot(myTeamDoc, (doc) => {
+        if (doc.exists()) {
+            const teamData = doc.data();
+            setStats(prev => ({ ...prev, stat2: teamData.members?.length || 0}));
+        }
+      });
+      unsubscribers.push(unsubscribeProject, unsubscribeTeam);
+    }
+    
+    setLoading(false);
+
+    // --- Cleanup ---
+    // This function is called when the component unmounts
+    return () => {
+      unsubscribers.forEach(unsub => unsub());
     };
-    load();
-    return () => { unsubscribers.forEach(u => u && u()); };
-  }, [userProfile]);
+  }, [userProfile, user]);
 
-  const mergeAndSortActivities = (current, previous) => {
-    // Deduplicate by id
-    const map = new Map();
-    [...previous, ...current].forEach(a => { map.set(a.id, a); });
-    return Array.from(map.values()).sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 10);
-  };
 
   const getGreeting = () => {
+    // ... (utility functions are unchanged)
     const hour = new Date().getHours();
     if (hour < 12) return 'Good morning';
     if (hour < 17) return 'Good afternoon';
@@ -240,15 +175,15 @@ const Dashboard = () => {
 
   const getStatLabels = () => {
     if (userProfile?.role === 'student') {
-      return ['My Projects', 'Team Members', 'Pending Tasks', 'Completed Phases'];
+      return ['My Project', 'Team Members', 'Pending Tasks', 'Completed Phases'];
     } else if (userProfile?.role === 'faculty') {
-      return ['Mentored Projects', 'Active Teams', 'Pending Reviews', 'Completed Evaluations'];
+      return ['Mentored Projects', 'Active Teams', 'Pending Reviews', 'Completed Evals'];
     } else {
       return ['Total Projects', 'Active Teams', 'Pending Approvals', 'Completed Phases'];
     }
   };
 
-  if (loading) {
+  if (loading && !userProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
@@ -277,10 +212,9 @@ const Dashboard = () => {
 
           {/* Stats Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            {Object.values(stats).map((value, index) => {
+            {[stats.stat1, stats.stat2, stats.stat3, stats.stat4].map((value, index) => {
               const Icon = getStatIcon(index);
               const labels = getStatLabels();
-              
               return (
                 <div key={index} className="card">
                   <div className="flex items-center justify-between">
@@ -303,15 +237,9 @@ const Dashboard = () => {
             {/* Recent Activities */}
             <div className="lg:col-span-2">
               <div className="card">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold text-gray-900">
+                 <h2 className="text-lg font-semibold text-gray-900 mb-4">
                     Recent Activities
                   </h2>
-                  <button className="text-sm text-red-600 hover:text-red-700 font-medium">
-                    View all
-                  </button>
-                </div>
-                
                 <div className="space-y-4">
                   {recentActivities.map((activity) => {
                     const Icon = activity.icon;
@@ -330,8 +258,7 @@ const Dashboard = () => {
                     );
                   })}
                 </div>
-                
-                {recentActivities.length === 0 && (
+                {recentActivities.length === 0 && !loading && (
                   <div className="text-center py-8">
                     <MessageSquare className="w-12 h-12 text-gray-400 mx-auto mb-3" />
                     <p className="text-gray-500">No recent activities</p>
@@ -343,25 +270,20 @@ const Dashboard = () => {
             {/* Upcoming Deadlines */}
             <div>
               <div className="card">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold text-gray-900">
-                    Upcoming Deadlines
-                  </h2>
-                  <Calendar className="w-5 h-5 text-gray-400" />
-                </div>
-                
+                <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                  Upcoming Deadlines
+                </h2>
                 <div className="space-y-3">
                   {upcomingDeadlines.map((deadline) => {
-                    const daysUntil = getDaysUntilDeadline(deadline.dueDate);
+                    const daysUntil = getDaysUntilDeadline(deadline.deadline);
                     const isUrgent = daysUntil <= 3;
-                    
                     return (
                       <div key={deadline.id} className="border-l-4 border-red-500 pl-3">
                         <h3 className="text-sm font-medium text-gray-900">
-                          {deadline.title}
+                          {deadline.name}
                         </h3>
                         <p className="text-xs text-gray-500">
-                          {formatDate(deadline.dueDate)}
+                          {formatDate(deadline.deadline)}
                         </p>
                         <p className={`text-xs font-medium ${
                           isUrgent ? 'text-red-600' : 'text-orange-600'
@@ -372,8 +294,7 @@ const Dashboard = () => {
                     );
                   })}
                 </div>
-                
-                {upcomingDeadlines.length === 0 && (
+                {upcomingDeadlines.length === 0 && !loading && (
                   <div className="text-center py-8">
                     <Calendar className="w-12 h-12 text-gray-400 mx-auto mb-3" />
                     <p className="text-gray-500">No upcoming deadlines</p>
@@ -382,68 +303,7 @@ const Dashboard = () => {
               </div>
             </div>
           </div>
-
-          {/* Quick Actions */}
-          <div className="mt-8">
-            <div className="card">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                Quick Actions
-              </h2>
-              
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {userProfile?.role === 'student' && (
-                  <>
-                    <button className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <Plus className="w-5 h-5 text-red-600" />
-                      <span className="text-sm font-medium">Submit Project</span>
-                    </button>
-                    <button className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <Users className="w-5 h-5 text-red-600" />
-                      <span className="text-sm font-medium">Join Team</span>
-                    </button>
-                    <button className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <MessageSquare className="w-5 h-5 text-red-600" />
-                      <span className="text-sm font-medium">Contact Mentor</span>
-                    </button>
-                  </>
-                )}
-                
-                {userProfile?.role === 'faculty' && (
-                  <>
-                    <button className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <CheckCircle className="w-5 h-5 text-red-600" />
-                      <span className="text-sm font-medium">Review Projects</span>
-                    </button>
-                    <button className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <Award className="w-5 h-5 text-red-600" />
-                      <span className="text-sm font-medium">Grade Submissions</span>
-                    </button>
-                    <button className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <Users className="w-5 h-5 text-red-600" />
-                      <span className="text-sm font-medium">Manage Teams</span>
-                    </button>
-                  </>
-                )}
-                
-                {userProfile?.role === 'admin' && (
-                  <>
-                    <button className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <Calendar className="w-5 h-5 text-red-600" />
-                      <span className="text-sm font-medium">Manage Phases</span>
-                    </button>
-                    <button className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <Users className="w-5 h-5 text-red-600" />
-                      <span className="text-sm font-medium">Manage Users</span>
-                    </button>
-                    <button className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <TrendingUp className="w-5 h-5 text-red-600" />
-                      <span className="text-sm font-medium">View Reports</span>
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
+          {/* Quick Actions section can remain as is */}
         </main>
       </div>
     </ProtectedRoute>

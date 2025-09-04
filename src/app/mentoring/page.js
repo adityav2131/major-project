@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { collection, query, where, getDocs, updateDoc, doc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, updateDoc, doc, addDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import Header from '@/app/components/Header';
 import ProtectedRoute from '@/app/components/ProtectedRoute';
@@ -85,24 +85,6 @@ const MentoringPage = () => {
       if (project) {
         setMentoredProjects(prev => [...prev, { ...project, mentorId: user.uid, status: 'approved' }]);
         setPendingProjects(prev => prev.filter(p => p.id !== projectId));
-
-        // Create team notification
-        if (project.teamId) {
-          try {
-            await addDoc(collection(db, 'teamNotifications'), {
-              teamId: project.teamId,
-              type: 'acceptance',
-              title: 'Project Approved',
-              message: `Your project "${project.title}" has been approved by the mentor`,
-              mentorId: user.uid,
-              projectId: project.id,
-              read: false,
-              createdAt: serverTimestamp()
-            });
-          } catch (notifyErr) {
-            console.error('Failed to create acceptance notification:', notifyErr);
-          }
-        }
       }
     } catch (error) {
       console.error('Error accepting project:', error);
@@ -119,24 +101,6 @@ const MentoringPage = () => {
 
       // Remove from pending projects
       setPendingProjects(prev => prev.filter(p => p.id !== projectId));
-
-      const project = pendingProjects.find(p => p.id === projectId);
-      if (project?.teamId) {
-        try {
-          await addDoc(collection(db, 'teamNotifications'), {
-            teamId: project.teamId,
-            type: 'review',
-            title: 'Revision Requested',
-            message: `Mentor requested revisions: ${reason.slice(0, 140)}${reason.length > 140 ? '...' : ''}`,
-            mentorId: user.uid,
-            projectId: project.id,
-            read: false,
-            createdAt: serverTimestamp()
-          });
-        } catch (notifyErr) {
-          console.error('Failed to create revision notification:', notifyErr);
-        }
-      }
     } catch (error) {
       console.error('Error requesting revision:', error);
     }
@@ -148,6 +112,7 @@ const MentoringPage = () => {
     try {
       const feedbackData = {
         projectId: selectedProject.id,
+        teamId: selectedProject.teamId, // <<< CHANGED: Added teamId for security rules
         mentorId: user.uid,
         feedback: feedback,
         rating: rating,
@@ -163,24 +128,6 @@ const MentoringPage = () => {
         lastRating: rating,
         lastFeedbackAt: new Date().toISOString()
       });
-
-      // Team notification about feedback
-      if (selectedProject.teamId) {
-        try {
-          await addDoc(collection(db, 'teamNotifications'), {
-            teamId: selectedProject.teamId,
-            type: 'review',
-            title: 'New Mentor Feedback',
-            message: `Feedback received with rating ${rating}/5`,
-            mentorId: user.uid,
-            projectId: selectedProject.id,
-            read: false,
-            createdAt: serverTimestamp()
-          });
-        } catch (notifyErr) {
-          console.error('Failed to create feedback notification:', notifyErr);
-        }
-      }
 
       setFeedback('');
       setRating(0);

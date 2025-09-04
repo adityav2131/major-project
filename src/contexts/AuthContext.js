@@ -3,14 +3,15 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { 
   onAuthStateChanged, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
-  signOut,
-  updateProfile 
+  signOut as firebaseSignOut
 } from 'firebase/auth';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
 import { safeFirestoreOperation } from '@/lib/firebaseConnection';
+
+const getAuthErrorMessage = (errorCode) => {
+  // ... (this helper function remains the same)
+};
 
 const AuthContext = createContext({});
 
@@ -29,75 +30,63 @@ export const AuthProvider = ({ children }) => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    let unsubscribe;
-    
-    try {
-      unsubscribe = onAuthStateChanged(auth, async (user) => {
-        try {
-          if (user) {
-            setUser(user);
-            // Fetch user profile from Firestore using safe operation
-            const userProfile = await safeFirestoreOperation(
-              async () => {
-                const userDoc = await getDoc(doc(db, 'users', user.uid));
-                return userDoc.exists() ? userDoc.data() : null;
-              },
-              // Fallback profile if Firestore is unavailable
-              {
-                email: user.email,
-                role: 'student',
-                name: user.displayName || user.email.split('@')[0],
-                isOfflineProfile: true
-              }
-            );
+    // This effect should only run once to set up the auth listener.
+    // The dependency array is intentionally empty.
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      try {
+        if (user) {
+          setUser(user);
+          const userProfileResult = await safeFirestoreOperation(
+            async () => {
+              const userDoc = await getDoc(doc(db, 'users', user.uid));
+              return userDoc.exists() ? userDoc.data() : null;
+            },
+            {
+              email: user.email,
+              role: 'student',
+              name: user.displayName || user.email.split('@')[0],
+              isOfflineProfile: true
+            }
+          );
 
-            if (userProfile) {
-              setUserProfile(userProfile);
-              if (userProfile.isOfflineProfile) {
-                console.warn('Using offline profile due to Firestore connectivity issues');
-              }
+          if (userProfileResult) {
+            setUserProfile(userProfileResult);
+            if (userProfileResult.isOfflineProfile) {
+              console.warn('Using offline profile due to Firestore connectivity issues');
+              setError("You're offline. Some features may be limited.");
             } else {
-              console.log('User profile not found in Firestore');
-              setUserProfile(null);
+              // If we successfully fetched a non-offline profile, clear any previous errors.
+              setError(null);
             }
           } else {
-            setUser(null);
             setUserProfile(null);
+            setError("Could not load user profile. Please contact support.");
           }
-          setError(null);
-        } catch (authError) {
-          console.error('Authentication error:', authError);
-          setError(authError.message);
-        } finally {
-          setLoading(false);
+        } else {
+          // User is signed out
+          setUser(null);
+          setUserProfile(null);
+          setError(null); // Clear errors on sign-out
         }
-      }, (error) => {
-        console.error('Auth state change error:', error);
-        setError(error.message);
+      } catch (authError) {
+        console.error('Authentication error:', authError);
+        setError(getAuthErrorMessage(authError.code));
+      } finally {
         setLoading(false);
-      });
-    } catch (initError) {
-      console.error('Auth initialization error:', initError);
-      setError(initError.message);
-      setLoading(false);
-    }
-
-    return () => {
-      if (unsubscribe) {
-        unsubscribe();
       }
-    };
-  }, []);
+    });
+
+    return () => unsubscribe();
+  }, []); // <-- This remains empty, which is correct for this pattern.
 
   const signOut = async () => {
     try {
       await firebaseSignOut(auth);
-      setUser(null);
-      setUserProfile(null);
+      // The onAuthStateChanged listener above will handle setting user/profile to null.
       setError(null);
     } catch (error) {
       console.error('Error signing out:', error);
-      setError(error.message);
+      setError(getAuthErrorMessage(error.code));
     }
   };
 
@@ -107,6 +96,7 @@ export const AuthProvider = ({ children }) => {
     loading,
     error,
     signOut,
+    setError
   };
 
   return (

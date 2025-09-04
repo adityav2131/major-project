@@ -3,16 +3,40 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
 import Image from 'next/image';
+import { useAuth } from '@/contexts/AuthContext'; // Import useAuth
 import { Eye, EyeOff, UserCheck, Users, Shield } from 'lucide-react';
+
+// This helper function maps Firebase error codes to user-friendly messages
+// It's the same logic from AuthContext, ensuring consistent messages
+const getAuthErrorMessage = (errorCode) => {
+  switch (errorCode) {
+    case 'auth/user-not-found':
+      return 'No account found with this email address. Please check your email or sign up.';
+    case 'auth/wrong-password':
+      return 'Incorrect password. Please try again.';
+    case 'auth/email-already-in-use':
+      return 'An account with this email already exists. Please sign in instead.';
+    case 'auth/weak-password':
+      return 'The password is too weak. It should be at least 6 characters long.';
+    case 'auth/invalid-email':
+      return 'The email address is not valid. Please enter a valid email.';
+    case 'auth/too-many-requests':
+      return 'Access to this account has been temporarily disabled due to many failed login attempts. You can reset your password or try again later.';
+    case 'auth/network-request-failed':
+      return 'Network error. Please check your internet connection and try again.';
+    default:
+      return 'An unexpected error occurred. Please try again.';
+  }
+};
 
 const AuthForm = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const { error, setError } = useAuth(); // Use error state and setter from context
   const router = useRouter();
 
   const [formData, setFormData] = useState({
@@ -40,35 +64,30 @@ const AuthForm = () => {
       setError('Email and password are required');
       return false;
     }
-
     if (!isLogin) {
       if (!formData.name) {
         setError('Name is required');
         return false;
       }
-
       if (formData.role === 'student' && !formData.studentId) {
         setError('Student ID is required for students');
         return false;
       }
-
       if (formData.role === 'faculty' && !formData.employeeId) {
         setError('Employee ID is required for faculty');
         return false;
       }
-
       if (formData.role === 'student' && (!formData.year || !formData.semester)) {
         setError('Year and semester are required for students');
         return false;
       }
     }
-
     return true;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
+    setError(null); // Clear previous errors from context
 
     if (!validateForm()) return;
 
@@ -76,15 +95,12 @@ const AuthForm = () => {
 
     try {
       if (isLogin) {
-        // Sign in existing user
         await signInWithEmailAndPassword(auth, formData.email, formData.password);
         router.push('/dashboard');
       } else {
-        // Create new user
         const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
         const user = userCredential.user;
 
-        // Create user profile in Firestore
         const userProfile = {
           uid: user.uid,
           email: formData.email,
@@ -109,49 +125,20 @@ const AuthForm = () => {
           })
         };
 
-        try {
-          await setDoc(doc(db, 'users', user.uid), userProfile);
-          router.push('/dashboard');
-        } catch (firestoreError) {
-          console.error('Firestore error:', firestoreError);
-          setError('Account created but profile setup failed. Please contact support.');
-        }
+        await setDoc(doc(db, 'users', user.uid), userProfile);
+        router.push('/dashboard');
       }
-    } catch (error) {
-      console.error('Authentication error:', error);
-      
-      // Handle specific Firebase auth errors
-      switch (error.code) {
-        case 'auth/user-not-found':
-          setError('No account found with this email address');
-          break;
-        case 'auth/wrong-password':
-          setError('Incorrect password');
-          break;
-        case 'auth/email-already-in-use':
-          setError('An account with this email already exists');
-          break;
-        case 'auth/weak-password':
-          setError('Password should be at least 6 characters');
-          break;
-        case 'auth/invalid-email':
-          setError('Invalid email address');
-          break;
-        case 'auth/too-many-requests':
-          setError('Too many failed attempts. Please try again later.');
-          break;
-        case 'auth/network-request-failed':
-          setError('Network error. Please check your internet connection.');
-          break;
-        default:
-          setError('An error occurred. Please try again.');
-      }
+    } catch (authError) {
+      console.error('Authentication error:', authError);
+      // Use the helper to set a user-friendly error message in the global context
+      setError(getAuthErrorMessage(authError.code));
     } finally {
       setLoading(false);
     }
   };
-
+  
   const getRoleIcon = (role) => {
+    // ... (rest of the component is unchanged)
     switch (role) {
       case 'student':
         return <Users className="w-4 h-4" />;
@@ -377,7 +364,7 @@ const AuthForm = () => {
             <button
               onClick={() => {
                 setIsLogin(!isLogin);
-                setError('');
+                setError(null); // Clear context error when switching forms
                 setFormData({
                   email: '',
                   password: '',
