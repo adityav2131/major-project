@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import { getNavigationLinks, getProfileLinks, appConfig } from '@/lib/navigationConfig';
 import { 
   Bell, 
   User, 
@@ -24,19 +25,9 @@ const Header = () => {
     setIsProfileDropdownOpen(false);
   };
 
-  const navLinks = [
-    { href: '/dashboard', label: 'Dashboard' },
-    { href: '/projects', label: 'Projects' },
-    { href: '/teams', label: 'Teams' },
-    ...(userProfile?.role === 'admin' ? [
-      { href: '/admin', label: 'Admin Panel' },
-      { href: '/phases', label: 'Manage Phases' }
-    ] : []),
-    ...(userProfile?.role === 'faculty' ? [
-      { href: '/mentoring', label: 'Mentoring' },
-      { href: '/evaluations', label: 'Evaluations' }
-    ] : []),
-  ];
+  // Get navigation links based on user role
+  const navLinks = getNavigationLinks(userProfile?.role);
+  const profileLinks = getProfileLinks();
 
   if (!user) return null;
 
@@ -47,8 +38,8 @@ const Header = () => {
           {/* Logo and Title */}
           <div className="flex items-center space-x-4">
             <Link href="/dashboard" className="flex items-center space-x-3">
-                            <Image
-                src="/university-logo.jpeg"
+              <Image
+                src={appConfig.logo}
                 alt="University Logo"
                 width={40}
                 height={40}
@@ -57,10 +48,10 @@ const Header = () => {
               />
               <div className="hidden md:block">
                 <h1 className="text-xl font-bold text-gray-900">
-                  Project Management Portal
+                  {appConfig.title}
                 </h1>
                 <p className="text-sm text-gray-600">
-                  Department of Computer Science & Engineering
+                  {appConfig.subtitle}
                 </p>
               </div>
             </Link>
@@ -119,22 +110,19 @@ const Header = () => {
                     </span>
                   </div>
                   <div className="py-1">
-                    <Link
-                      href="/profile"
-                      className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                      onClick={() => setIsProfileDropdownOpen(false)}
-                    >
-                      <User size={16} className="mr-2" />
-                      Profile
-                    </Link>
-                    <Link
-                      href="/settings"
-                      className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                      onClick={() => setIsProfileDropdownOpen(false)}
-                    >
-                      <Settings size={16} className="mr-2" />
-                      Settings
-                    </Link>
+                    {profileLinks.map((link) => (
+                      <Link
+                        key={link.href}
+                        href={link.href}
+                        className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                        onClick={() => setIsProfileDropdownOpen(false)}
+                      >
+                        {link.icon === 'User' && <User size={16} className="mr-2" />}
+                        {link.icon === 'Settings' && <Settings size={16} className="mr-2" />}
+                        {link.icon === 'Bell' && <Bell size={16} className="mr-2" />}
+                        {link.label}
+                      </Link>
+                    ))}
                     <button
                       onClick={handleSignOut}
                       className="w-full text-left flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"

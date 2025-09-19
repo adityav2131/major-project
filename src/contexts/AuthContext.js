@@ -29,35 +29,83 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // Function to sync offline data when back online
+  const syncOfflineData = async (userId) => {
+    try {
+      const storedProfile = localStorage.getItem(`offline_profile_${userId}`);
+      if (storedProfile) {
+        const offlineProfile = JSON.parse(storedProfile);
+        // If we have offline data, try to sync it
+        const freshProfile = await safeFirestoreOperation(
+          async () => {
+            const userDoc = await getDoc(doc(db, 'users', userId));
+            return userDoc.exists() ? userDoc.data() : null;
+          }
+        );
+        
+        if (freshProfile && !freshProfile.isOfflineProfile) {
+          // Successfully synced, remove offline data
+          localStorage.removeItem(`offline_profile_${userId}`);
+          setError(null);
+          return freshProfile;
+        }
+      }
+      return null;
+    } catch (syncError) {
+      console.error('Error syncing offline data:', syncError);
+      return null;
+    }
+  };
+
   useEffect(() => {
+    // Simplified user profile handling
+    const loadUserProfile = async (user) => {
+      try {
+        // First try to sync any offline data
+        const syncedProfile = await syncOfflineData(user.uid);
+        if (syncedProfile) {
+          return syncedProfile;
+        }
+
+        // Try to fetch fresh profile
+        const userProfileResult = await safeFirestoreOperation(
+          async () => {
+            const userDoc = await getDoc(doc(db, 'users', user.uid));
+            return userDoc.exists() ? userDoc.data() : null;
+          },
+          {
+            email: user.email,
+            role: 'student',
+            name: user.displayName || user.email.split('@')[0],
+            isOfflineProfile: true
+          }
+        );
+
+        if (userProfileResult?.isOfflineProfile) {
+          // Store offline profile for future sync
+          localStorage.setItem(`offline_profile_${user.uid}`, JSON.stringify(userProfileResult));
+          setError("You're offline. Some features may be limited.");
+        } else if (userProfileResult) {
+          setError(null);
+        }
+
+        return userProfileResult;
+      } catch (error) {
+        console.error('Error loading user profile:', error);
+        return null;
+      }
+    };
+
     // This effect should only run once to set up the auth listener.
     // The dependency array is intentionally empty.
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       try {
         if (user) {
           setUser(user);
-          const userProfileResult = await safeFirestoreOperation(
-            async () => {
-              const userDoc = await getDoc(doc(db, 'users', user.uid));
-              return userDoc.exists() ? userDoc.data() : null;
-            },
-            {
-              email: user.email,
-              role: 'student',
-              name: user.displayName || user.email.split('@')[0],
-              isOfflineProfile: true
-            }
-          );
-
-          if (userProfileResult) {
-            setUserProfile(userProfileResult);
-            if (userProfileResult.isOfflineProfile) {
-              console.warn('Using offline profile due to Firestore connectivity issues');
-              setError("You're offline. Some features may be limited.");
-            } else {
-              // If we successfully fetched a non-offline profile, clear any previous errors.
-              setError(null);
-            }
+          const profile = await loadUserProfile(user);
+          
+          if (profile) {
+            setUserProfile(profile);
           } else {
             setUserProfile(null);
             setError("Could not load user profile. Please contact support.");
@@ -66,7 +114,7 @@ export const AuthProvider = ({ children }) => {
           // User is signed out
           setUser(null);
           setUserProfile(null);
-          setError(null); // Clear errors on sign-out
+          setError(null);
         }
       } catch (authError) {
         console.error('Authentication error:', authError);
@@ -77,11 +125,15 @@ export const AuthProvider = ({ children }) => {
     });
 
     return () => unsubscribe();
-  }, []); // <-- This remains empty, which is correct for this pattern.
+  }, []);
 
   const signOut = async () => {
     try {
       await firebaseSignOut(auth);
+      // Clear any stored offline profiles
+      if (user) {
+        localStorage.removeItem(`offline_profile_${user.uid}`);
+      }
       // The onAuthStateChanged listener above will handle setting user/profile to null.
       setError(null);
     } catch (error) {

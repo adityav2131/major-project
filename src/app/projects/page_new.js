@@ -5,12 +5,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import Header from '@/app/components/Header';
 import ProtectedRoute from '@/app/components/ProtectedRoute';
 import AbstractSubmission from '@/app/components/AbstractSubmission';
-import SynopsisSubmission from '@/app/components/SynopsisSubmission';
-import PresentationManagement from '@/app/components/PresentationManagement';
-import FinalReportSubmission from '@/app/components/FinalReportSubmission';
 import { phaseUtils, permissionUtils, dateUtils, uiUtils } from '@/lib/utils';
 import { StatusConfig } from '@/lib/dataModels';
-import { projectService, teamService } from '@/lib/services';
 import {
   BookOpen,
   Plus,
@@ -33,9 +29,7 @@ import {
   Download,
   Eye,
   Edit,
-  Send,
-  BarChart3,
-  Video
+  Send
 } from 'lucide-react';
 
 const EnhancedProjectsPage = () => {
@@ -59,62 +53,38 @@ const EnhancedProjectsPage = () => {
   };
 
   useEffect(() => {
-    if (!userProfile) return;
+    const loadProjectData = async () => {
+      if (!userProfile) return;
 
-    let unsubscribeProject;
-    let unsubscribeProjects;
+      try {
+        setLoading(true);
+        // Implementation would fetch project data based on user role
+        // This is a placeholder structure
+      } catch (error) {
+        console.error('Error fetching project data:', error);
+        showNotification('Failed to load project data', 'error');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadProjectData();
+  }, [userProfile]);
+
+  const fetchProjectData = async () => {
+    if (!userProfile) return;
 
     try {
       setLoading(true);
-
-      if (userProfile.role === 'student') {
-        // Subscribe to user's project with real-time updates
-        unsubscribeProject = projectService.subscribeToUserProject(user.uid, (project) => {
-          setMyProject(project);
-          setLoading(false);
-          if (!project) {
-            showNotification('No project found. Please create a team and project first.', 'info');
-          }
-        });
-
-        // Also get team data if user has a team
-        if (userProfile.teamId) {
-          teamService.getTeam(userProfile.teamId).then(team => {
-            if (team) {
-              setMyTeam(team);
-            }
-          }).catch(error => {
-            console.error('Error fetching team:', error);
-          });
-        }
-      } else if (userProfile.role === 'faculty') {
-        // Faculty - subscribe to projects they mentor with real-time updates
-        unsubscribeProjects = projectService.subscribeToMentorProjects(user.uid, (projects) => {
-          setProjects(projects);
-          setLoading(false);
-        });
-      } else if (userProfile.role === 'admin') {
-        // Admin - subscribe to all projects with real-time updates
-        unsubscribeProjects = projectService.subscribeToAllProjects((projects) => {
-          setProjects(projects);
-          setLoading(false);
-        });
-      }
+      // Implementation would fetch project data based on user role
+      // This is a placeholder structure
     } catch (error) {
-      console.error('Error setting up project subscriptions:', error);
+      console.error('Error fetching project data:', error);
       showNotification('Failed to load project data', 'error');
+    } finally {
       setLoading(false);
     }
-
-    // Cleanup subscriptions on unmount
-    return () => {
-      if (unsubscribeProject) unsubscribeProject();
-      if (unsubscribeProjects) unsubscribeProjects();
-    };
-  }, [userProfile, user]);
-
-  // Remove the old fetchProjectData function since we're using real-time listeners
-  // const fetchProjectData = async () => { ... };
+  };
 
   const ProjectPhaseCard = ({ phase, project, isActive, isCompleted, isLocked }) => (
     <div className={`card ${isActive ? 'border-l-4 border-l-red-500' : ''} ${isLocked ? 'opacity-60' : ''}`}>
@@ -560,10 +530,8 @@ const EnhancedProjectsPage = () => {
           <div>
             {activeTab === 'overview' && <ProjectOverview />}
             {activeTab === 'abstract' && <AbstractSubmission />}
-            {activeTab === 'synopsis' && <SynopsisSubmission />}
-            {activeTab === 'presentations' && <PresentationManagement />}
-            {activeTab === 'finalReport' && <FinalReportSubmission />}
             {activeTab === 'allProjects' && <AllProjectsView />}
+            {/* Add other tab contents as needed */}
           </div>
         </main>
       </div>

@@ -2,175 +2,321 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { collection, query, where, getDocs, updateDoc, doc, addDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
 import Header from '@/app/components/Header';
 import ProtectedRoute from '@/app/components/ProtectedRoute';
-import {
-  Users,
-  BookOpen,
-  MessageSquare,
-  Star,
+import { projectService, teamService } from '@/lib/services';
+import { uiUtils, dateUtils } from '@/lib/utils';
+import { 
+  Users, 
+  BookOpen, 
+  Clock, 
   CheckCircle,
-  X,
-  Clock,
-  AlertTriangle,
-  FileText,
+  AlertCircle,
   Calendar,
-  Award
+  MessageSquare,
+  FileText,
+  Star,
+  TrendingUp,
+  Eye,
+  Edit,
+  Plus,
+  Search,
+  Filter
 } from 'lucide-react';
 
 const MentoringPage = () => {
   const { user, userProfile } = useAuth();
-  const [mentoredProjects, setMentoredProjects] = useState([]);
-  const [pendingProjects, setPendingProjects] = useState([]);
+  const [mentorData, setMentorData] = useState({
+    teams: [],
+    projects: [],
+    stats: {
+      totalTeams: 0,
+      activeProjects: 0,
+      completedProjects: 0,
+      averageProgress: 0
+    }
+  });
   const [loading, setLoading] = useState(true);
-  const [selectedProject, setSelectedProject] = useState(null);
-  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
-  const [feedback, setFeedback] = useState('');
-  const [rating, setRating] = useState(0);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterStatus, setFilterStatus] = useState('all');
 
   useEffect(() => {
-    const fetchData = async () => {
-      if (!userProfile || userProfile.role !== 'faculty') return;
-
+    const loadMentoringData = async () => {
+      if (userProfile?.role !== 'faculty') return;
+      
       try {
         setLoading(true);
+        
+        // Subscribe to mentor's projects with real-time updates
+        const unsubscribe = projectService.subscribeToMentorProjects(user.uid, (projects) => {
+          const teams = []; // This would be populated from team data
+          
+          const stats = {
+            totalTeams: teams.length,
+            activeProjects: projects.filter(p => p.status === 'active').length,
+            completedProjects: projects.filter(p => p.status === 'completed').length,
+            averageProgress: projects.length > 0 
+              ? projects.reduce((acc, p) => acc + (p.currentPhase || 0), 0) / projects.length
+              : 0
+          };
 
-        // Fetch projects assigned to this faculty member
-        const mentoredQuery = query(
-          collection(db, 'projects'),
-          where('mentorId', '==', user.uid)
-        );
-        const mentoredSnapshot = await getDocs(mentoredQuery);
-        const mentoredData = mentoredSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setMentoredProjects(mentoredData);
+          setMentorData({
+            teams,
+            projects,
+            stats
+          });
+          setLoading(false);
+        });
 
-        // Fetch pending projects that need mentor assignment
-        const pendingQuery = query(
-          collection(db, 'projects'),
-          where('status', '==', 'pending_approval'),
-          where('mentorId', '==', null)
-        );
-        const pendingSnapshot = await getDocs(pendingQuery);
-        const pendingData = pendingSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setPendingProjects(pendingData);
-
+        return () => unsubscribe();
       } catch (error) {
-        console.error('Error fetching mentoring data:', error);
-      } finally {
+        console.error('Error loading mentoring data:', error);
         setLoading(false);
       }
     };
 
-    fetchData();
-  }, [userProfile, user]);
+    loadMentoringData();
+  }, [user, userProfile]);
 
-  const acceptProject = async (projectId) => {
-    try {
-      await updateDoc(doc(db, 'projects', projectId), {
-        mentorId: user.uid,
-        status: 'approved',
-        approvedAt: new Date().toISOString()
-      });
-
-      // Move project from pending to mentored
-      const project = pendingProjects.find(p => p.id === projectId);
-      if (project) {
-        setMentoredProjects(prev => [...prev, { ...project, mentorId: user.uid, status: 'approved' }]);
-        setPendingProjects(prev => prev.filter(p => p.id !== projectId));
-      }
-    } catch (error) {
-      console.error('Error accepting project:', error);
-    }
-  };
-
-  const requestRevision = async (projectId, reason) => {
-    try {
-      await updateDoc(doc(db, 'projects', projectId), {
-        status: 'needs_revision',
-        revisionReason: reason,
-        reviewedAt: new Date().toISOString()
-      });
-
-      // Remove from pending projects
-      setPendingProjects(prev => prev.filter(p => p.id !== projectId));
-    } catch (error) {
-      console.error('Error requesting revision:', error);
-    }
-  };
-
-  const submitFeedback = async () => {
-    if (!selectedProject || !feedback.trim()) return;
-
-    try {
-      const feedbackData = {
-        projectId: selectedProject.id,
-        teamId: selectedProject.teamId, // <<< CHANGED: Added teamId for security rules
-        mentorId: user.uid,
-        feedback: feedback,
-        rating: rating,
-        submittedAt: new Date().toISOString(),
-        phase: selectedProject.currentPhase
-      };
-
-      await addDoc(collection(db, 'evaluations'), feedbackData);
-
-      // Update project with latest feedback
-      await updateDoc(doc(db, 'projects', selectedProject.id), {
-        lastFeedback: feedback,
-        lastRating: rating,
-        lastFeedbackAt: new Date().toISOString()
-      });
-
-      setFeedback('');
-      setRating(0);
-      setShowFeedbackModal(false);
-      setSelectedProject(null);
-
-      // Refresh mentored projects
-      const mentoredQuery = query(
-        collection(db, 'projects'),
-        where('mentorId', '==', user.uid)
-      );
-      const mentoredSnapshot = await getDocs(mentoredQuery);
-      const mentoredData = mentoredSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setMentoredProjects(mentoredData);
-
-    } catch (error) {
-      console.error('Error submitting feedback:', error);
-    }
-  };
-
-  const getStatusBadge = (status) => {
-    const statusConfig = {
-      'pending_approval': { label: 'Pending Approval', className: 'badge badge-warning' },
-      'approved': { label: 'Approved', className: 'badge badge-success' },
-      'needs_revision': { label: 'Needs Revision', className: 'badge badge-error' },
-      'in_progress': { label: 'In Progress', className: 'badge badge-info' },
-      'completed': { label: 'Completed', className: 'badge badge-success' }
-    };
+  const filteredProjects = mentorData.projects.filter(project => {
+    const matchesSearch = !searchQuery || 
+      project.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      project.teamName?.toLowerCase().includes(searchQuery.toLowerCase());
     
-    return statusConfig[status] || { label: status, className: 'badge badge-info' };
-  };
+    const matchesFilter = filterStatus === 'all' || project.status === filterStatus;
+    
+    return matchesSearch && matchesFilter;
+  });
+
+  const ProjectCard = ({ project }) => (
+    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+      <div className="flex items-start justify-between mb-4">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">{project.title || 'Untitled Project'}</h3>
+          <p className="text-sm text-gray-600">Team: {project.teamName || 'Unknown Team'}</p>
+          <div className="flex items-center space-x-2 mt-2">
+            <span className={uiUtils.getStatusBadgeClass(project.status || 'active')}>
+              {project.status || 'Active'}
+            </span>
+            <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
+              Phase {project.currentPhase || 1}/7
+            </span>
+          </div>
+        </div>
+        
+        <div className="flex space-x-2">
+          <button className="btn-secondary text-sm">
+            <Eye className="w-4 h-4 mr-1" />
+            View
+          </button>
+          <button className="btn-primary text-sm">
+            <MessageSquare className="w-4 h-4 mr-1" />
+            Feedback
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-sm font-medium text-gray-700">Progress</span>
+            <span className="text-sm text-gray-500">
+              {Math.round((project.currentPhase || 1) / 7 * 100)}%
+            </span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2">
+            <div 
+              className="bg-red-500 h-2 rounded-full"
+              style={{ width: `${(project.currentPhase || 1) / 7 * 100}%` }}
+            ></div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-4 pt-3 border-t border-gray-100">
+          <div className="text-center">
+            <div className="text-lg font-semibold text-gray-900">
+              {project.totalMarks || 0}
+            </div>
+            <div className="text-xs text-gray-600">Total Marks</div>
+          </div>
+          <div className="text-center">
+            <div className="text-lg font-semibold text-gray-900">
+              {project.submissions || 0}
+            </div>
+            <div className="text-xs text-gray-600">Submissions</div>
+          </div>
+          <div className="text-center">
+            <div className="text-lg font-semibold text-gray-900">
+              {project.teamMembers?.length || 0}
+            </div>
+            <div className="text-xs text-gray-600">Members</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const OverviewTab = () => (
+    <div className="space-y-6">
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center">
+            <Users className="w-8 h-8 text-blue-600" />
+            <div className="ml-4">
+              <h3 className="text-2xl font-bold text-gray-900">{mentorData.stats.totalTeams}</h3>
+              <p className="text-sm text-gray-600">Teams Mentoring</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center">
+            <BookOpen className="w-8 h-8 text-green-600" />
+            <div className="ml-4">
+              <h3 className="text-2xl font-bold text-gray-900">{mentorData.stats.activeProjects}</h3>
+              <p className="text-sm text-gray-600">Active Projects</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center">
+            <CheckCircle className="w-8 h-8 text-purple-600" />
+            <div className="ml-4">
+              <h3 className="text-2xl font-bold text-gray-900">{mentorData.stats.completedProjects}</h3>
+              <p className="text-sm text-gray-600">Completed</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center">
+            <TrendingUp className="w-8 h-8 text-orange-600" />
+            <div className="ml-4">
+              <h3 className="text-2xl font-bold text-gray-900">
+                {Math.round(mentorData.stats.averageProgress * 100) / 100}
+              </h3>
+              <p className="text-sm text-gray-600">Avg Phase</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Recent Activities */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h2 className="text-xl font-semibold text-gray-900 mb-4">Recent Activities</h2>
+        
+        <div className="space-y-4">
+          {[
+            { action: 'Abstract approved for Team Alpha', time: '2 hours ago', type: 'approval' },
+            { action: 'Feedback provided for Phase 2 presentation', time: '5 hours ago', type: 'feedback' },
+            { action: 'Team Beta requested mentor meeting', time: '1 day ago', type: 'meeting' },
+            { action: 'Synopsis evaluation completed', time: '2 days ago', type: 'evaluation' }
+          ].map((activity, index) => (
+            <div key={index} className="flex items-start space-x-3">
+              <div className="w-2 h-2 bg-red-500 rounded-full mt-2"></div>
+              <div className="flex-1">
+                <p className="text-sm text-gray-900">{activity.action}</p>
+                <p className="text-xs text-gray-500">{activity.time}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const ProjectsTab = () => (
+    <div className="space-y-6">
+      {/* Search and Filter */}
+      <div className="flex items-center space-x-4">
+        <div className="flex-1 relative">
+          <Search className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search projects or teams..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent"
+          />
+        </div>
+        
+        <select
+          value={filterStatus}
+          onChange={(e) => setFilterStatus(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent"
+        >
+          <option value="all">All Status</option>
+          <option value="active">Active</option>
+          <option value="completed">Completed</option>
+          <option value="on-hold">On Hold</option>
+        </select>
+      </div>
+
+      {/* Projects Grid */}
+      {filteredProjects.length > 0 ? (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {filteredProjects.map((project, index) => (
+            <ProjectCard key={project.id || index} project={project} />
+          ))}
+        </div>
+      ) : (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+          <BookOpen className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">No Projects Found</h3>
+          <p className="text-gray-600 mb-4">
+            {searchQuery || filterStatus !== 'all' 
+              ? 'No projects match your search criteria.' 
+              : 'You are not currently mentoring any projects.'}
+          </p>
+          {searchQuery || filterStatus !== 'all' ? (
+            <button
+              onClick={() => {
+                setSearchQuery('');
+                setFilterStatus('all');
+              }}
+              className="btn-secondary"
+            >
+              Clear Filters
+            </button>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+
+  if (userProfile?.role !== 'faculty') {
+    return (
+      <ProtectedRoute>
+        <div className="min-h-screen bg-gray-50">
+          <Header />
+          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+              <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
+              <p className="text-gray-600">This page is only accessible to faculty members.</p>
+            </div>
+          </main>
+        </div>
+      </ProtectedRoute>
+    );
+  }
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading mentoring dashboard...</p>
+      <ProtectedRoute>
+        <div className="min-h-screen bg-gray-50">
+          <Header />
+          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mx-auto mb-4"></div>
+              <p className="text-gray-600">Loading mentoring dashboard...</p>
+            </div>
+          </main>
         </div>
-      </div>
+      </ProtectedRoute>
     );
   }
 
@@ -180,271 +326,61 @@ const MentoringPage = () => {
         <Header />
         
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold text-gray-900">Mentoring Dashboard</h1>
-            <p className="text-gray-600 mt-1">
-              Review project proposals and guide student teams through their final year projects
-            </p>
-          </div>
-
-          {/* Stats Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div className="card">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-600">Mentored Projects</p>
-                  <p className="text-2xl font-bold text-gray-900">{mentoredProjects.length}</p>
-                </div>
-                <BookOpen className="w-8 h-8 text-blue-600" />
-              </div>
-            </div>
-
-            <div className="card">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-600">Pending Reviews</p>
-                  <p className="text-2xl font-bold text-gray-900">{pendingProjects.length}</p>
-                </div>
-                <Clock className="w-8 h-8 text-orange-600" />
-              </div>
-            </div>
-
-            <div className="card">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-600">Completed Evaluations</p>
-                  <p className="text-2xl font-bold text-gray-900">
-                    {mentoredProjects.filter(p => p.lastFeedback).length}
-                  </p>
-                </div>
-                <CheckCircle className="w-8 h-8 text-green-600" />
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Pending Projects for Review */}
+          {/* Header */}
+          <div className="flex items-center justify-between mb-8">
             <div>
-              <h2 className="text-xl font-semibold text-gray-900 mb-4">
-                Pending Project Reviews ({pendingProjects.length})
-              </h2>
-              
-              <div className="space-y-4">
-                {pendingProjects.map((project) => (
-                  <div key={project.id} className="card">
-                    <div className="flex justify-between items-start mb-3">
-                      <h3 className="text-lg font-semibold text-gray-900">{project.title}</h3>
-                      <span className={getStatusBadge(project.status).className}>
-                        {getStatusBadge(project.status).label}
-                      </span>
-                    </div>
-                    
-                    <div className="space-y-3 mb-4">
-                      <div>
-                        <h4 className="text-sm font-medium text-gray-700">Problem Statement:</h4>
-                        <p className="text-sm text-gray-600">{project.currentProblem}</p>
-                      </div>
-                      
-                      <div>
-                        <h4 className="text-sm font-medium text-gray-700">Proposed Solution:</h4>
-                        <p className="text-sm text-gray-600">{project.proposedSolution}</p>
-                      </div>
-                      
-                      {project.technologies && (
-                        <div>
-                          <h4 className="text-sm font-medium text-gray-700">Technologies:</h4>
-                          <p className="text-sm text-gray-600">{project.technologies}</p>
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div className="flex items-center justify-between text-xs text-gray-500 mb-4">
-                      <span>Submitted {new Date(project.submittedAt).toLocaleDateString()}</span>
-                      <span>Team ID: {project.teamId?.substring(0, 8)}...</span>
-                    </div>
-                    
-                    <div className="flex space-x-2">
-                      <button
-                        onClick={() => acceptProject(project.id)}
-                        className="btn-primary text-sm flex-1 flex items-center justify-center space-x-1"
-                      >
-                        <CheckCircle size={14} />
-                        <span>Accept & Mentor</span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          const reason = prompt('Reason for revision request:');
-                          if (reason) requestRevision(project.id, reason);
-                        }}
-                        className="btn-outline text-sm flex-1 flex items-center justify-center space-x-1"
-                      >
-                        <X size={14} />
-                        <span>Request Revision</span>
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                
-                {pendingProjects.length === 0 && (
-                  <div className="card text-center py-8">
-                    <Clock className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                    <h3 className="text-lg font-medium text-gray-900 mb-2">No pending reviews</h3>
-                    <p className="text-gray-600">All submitted projects have been reviewed.</p>
-                  </div>
-                )}
-              </div>
+              <h1 className="text-3xl font-bold text-gray-900">Mentoring Dashboard</h1>
+              <p className="text-gray-600">Track and guide your mentored teams and projects</p>
             </div>
-
-            {/* My Mentored Projects */}
-            <div>
-              <h2 className="text-xl font-semibold text-gray-900 mb-4">
-                My Mentored Projects ({mentoredProjects.length})
-              </h2>
-              
-              <div className="space-y-4">
-                {mentoredProjects.map((project) => (
-                  <div key={project.id} className="card">
-                    <div className="flex justify-between items-start mb-3">
-                      <h3 className="text-lg font-semibold text-gray-900">{project.title}</h3>
-                      <span className={getStatusBadge(project.status).className}>
-                        {getStatusBadge(project.status).label}
-                      </span>
-                    </div>
-                    
-                    <div className="flex items-center justify-between text-sm text-gray-600 mb-3">
-                      <span>Phase {project.currentPhase}/{project.totalPhases}</span>
-                      <span>Team ID: {project.teamId?.substring(0, 8)}...</span>
-                    </div>
-                    
-                    <div className="space-y-2 mb-4">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-500">Last Feedback:</span>
-                        <span className="text-gray-600">
-                          {project.lastFeedbackAt 
-                            ? new Date(project.lastFeedbackAt).toLocaleDateString()
-                            : 'No feedback yet'
-                          }
-                        </span>
-                      </div>
-                      
-                      {project.lastRating && (
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-500">Last Rating:</span>
-                          <div className="flex items-center space-x-1">
-                            {[1, 2, 3, 4, 5].map((star) => (
-                              <Star
-                                key={star}
-                                size={12}
-                                className={star <= project.lastRating ? 'text-yellow-400 fill-current' : 'text-gray-300'}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div className="flex space-x-2">
-                      <button
-                        onClick={() => {
-                          setSelectedProject(project);
-                          setShowFeedbackModal(true);
-                        }}
-                        className="btn-primary text-sm flex-1 flex items-center justify-center space-x-1"
-                      >
-                        <MessageSquare size={14} />
-                        <span>Provide Feedback</span>
-                      </button>
-                      <button className="btn-outline text-sm px-3">
-                        <FileText size={14} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                
-                {mentoredProjects.length === 0 && (
-                  <div className="card text-center py-8">
-                    <Users className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                    <h3 className="text-lg font-medium text-gray-900 mb-2">No mentored projects</h3>
-                    <p className="text-gray-600">Accept project proposals to start mentoring students.</p>
-                  </div>
-                )}
-              </div>
-            </div>
+            
+            <button className="btn-primary">
+              <Plus className="w-5 h-5 mr-2" />
+              Add Feedback
+            </button>
           </div>
+
+          {/* Tab Navigation */}
+          <div className="border-b border-gray-200 mb-6">
+            <nav className="-mb-px flex space-x-8">
+              {[
+                { id: 'overview', label: 'Overview' },
+                { id: 'projects', label: 'Projects' },
+                { id: 'evaluations', label: 'Evaluations' },
+                { id: 'schedule', label: 'Schedule' }
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`py-2 px-1 border-b-2 font-medium text-sm ${
+                    activeTab === tab.id
+                      ? 'border-red-500 text-red-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
+          </div>
+
+          {/* Tab Content */}
+          {activeTab === 'overview' && <OverviewTab />}
+          {activeTab === 'projects' && <ProjectsTab />}
+          {activeTab === 'evaluations' && (
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+              <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">Evaluations</h3>
+              <p className="text-gray-600">Evaluation management coming soon...</p>
+            </div>
+          )}
+          {activeTab === 'schedule' && (
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+              <Calendar className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">Schedule</h3>
+              <p className="text-gray-600">Schedule management coming soon...</p>
+            </div>
+          )}
         </main>
-
-        {/* Feedback Modal */}
-        {showFeedbackModal && selectedProject && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-lg max-w-2xl w-full p-6 max-h-[80vh] overflow-y-auto">
-              <h2 className="text-xl font-semibold text-gray-900 mb-4">
-                Provide Feedback for {selectedProject.title}
-              </h2>
-              
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Rating (1-5 stars)
-                  </label>
-                  <div className="flex items-center space-x-1">
-                    {[1, 2, 3, 4, 5].map((star) => (
-                      <button
-                        key={star}
-                        onClick={() => setRating(star)}
-                        className={`p-1 ${star <= rating ? 'text-yellow-400' : 'text-gray-300'} hover:text-yellow-400`}
-                      >
-                        <Star size={24} className={star <= rating ? 'fill-current' : ''} />
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Detailed Feedback
-                  </label>
-                  <textarea
-                    value={feedback}
-                    onChange={(e) => setFeedback(e.target.value)}
-                    className="input-field"
-                    rows={6}
-                    placeholder="Provide detailed feedback on the project progress, areas for improvement, and recommendations..."
-                  />
-                </div>
-                
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="text-sm font-medium text-gray-900 mb-2">Project Summary</h3>
-                  <p className="text-sm text-gray-600 mb-2">{selectedProject.currentProblem}</p>
-                  <div className="flex items-center justify-between text-xs text-gray-500">
-                    <span>Current Phase: {selectedProject.currentPhase}/{selectedProject.totalPhases}</span>
-                    <span>Status: {selectedProject.status.replace('_', ' ')}</span>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="flex space-x-3 mt-6">
-                <button
-                  onClick={submitFeedback}
-                  disabled={!feedback.trim() || rating === 0}
-                  className="btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Submit Feedback
-                </button>
-                <button
-                  onClick={() => {
-                    setShowFeedbackModal(false);
-                    setSelectedProject(null);
-                    setFeedback('');
-                    setRating(0);
-                  }}
-                  className="btn-outline flex-1"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </ProtectedRoute>
   );
